@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crash-data-refiner"
+version = "0.1.0"
+description = "Utilities for cleaning and normalizing roadway crash datasets"
+authors = [{name = "CrashDataRefiner"}]
+requires-python = ">=3.10"
+readme = "docs/README.md"
+
+[project.scripts]
+crash-data-refiner = "crash_data_refiner.cli:main"
