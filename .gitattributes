@@ -1,0 +1,3 @@
+# Ensure documentation and data files are treated as text
+*.md text
+*.csv text
