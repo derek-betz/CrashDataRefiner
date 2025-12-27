@@ -10,5 +10,10 @@ authors = [{name = "CrashDataRefiner"}]
 requires-python = ">=3.10"
 readme = "docs/README.md"
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+]
+
 [project.scripts]
 crash-data-refiner = "crash_data_refiner.cli:main"

@@ -26,6 +26,14 @@ a virtual environment directly from the repository:
 pip install -e .
 ```
 
+## Windows bootstrap
+
+Install Python 3.12, development dependencies, and run tests:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/bootstrap.ps1
+```
+
 ## Usage
 
 Refine a crash dataset using the CLI:
@@ -71,9 +79,8 @@ into analytics platforms, and `report` captures overall data hygiene metrics.
 Install development dependencies and run the test suite with:
 
 ```bash
-pip install -e .
-pip install pytest
-pytest
+pip install -e .[dev]
+python scripts/run_tests.py
 ```
 
 Feel free to adapt the pipeline to match the quirks of your crash dataset.
