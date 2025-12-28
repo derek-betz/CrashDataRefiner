@@ -9,6 +9,9 @@ description = "Utilities for cleaning and normalizing roadway crash datasets"
 authors = [{name = "CrashDataRefiner"}]
 requires-python = ">=3.10"
 readme = "docs/README.md"
+dependencies = [
+    "openpyxl>=3.1",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -17,3 +20,4 @@ dev = [
 
 [project.scripts]
 crash-data-refiner = "crash_data_refiner.cli:main"
+crash-data-refiner-gui = "crash_data_refiner.gui:main"

@@ -11,6 +11,8 @@ quickly normalize disparate data sources.
   they can be consumed reliably by downstream tooling.
 - **Flexible type coercion** - parse dates, convert numeric fields, and map
   boolean columns while gracefully handling blanks and malformed values.
+- **Relevance boundary filtering** - keep only crash points within a KMZ
+  polygon (single polygon required) and report excluded/invalid coordinates.
 - **Duplicate detection** - drop repeated records by specifying identifying
   columns.
 - **Gap filling** - inject default values for missing columns before exporting.
@@ -51,6 +53,26 @@ crash-data-refiner raw_crashes.csv refined_crashes.csv \
 
 After processing, a JSON-formatted summary describing dropped or modified rows
 is printed to the console.
+
+## Desktop GUI
+
+Launch the native desktop app:
+
+```bash
+crash-data-refiner-gui
+```
+
+Or double-click `launch_gui.pyw` on Windows. The GUI expects:
+
+- One crash data file (CSV or Excel).
+- One KMZ file containing **exactly one polygon** used as the relevance boundary.
+- Latitude and longitude columns (auto-detected, but adjustable).
+
+Outputs include:
+
+- The refined crash data (inside the polygon).
+- `Crashes Without Valid Lat-Long Data` saved next to the refined output.
+- A map report HTML file showing the polygon and included crashes, plus counts.
 
 ## Python API
 

@@ -10,6 +10,8 @@ from datetime import datetime
 import re
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
 
+from .geo import BoundaryFilterReport, PolygonBoundary, parse_coordinate, point_in_polygon
+
 
 _DATE_FORMATS: Sequence[str] = (
     "%Y-%m-%d",
@@ -133,7 +135,12 @@ class CrashDataRefiner:
     def __init__(self, config: RefinementConfig | None = None):
         self.config = (config or RefinementConfig()).normalized()
 
-    def refine_rows(self, rows: Iterable[Mapping[str, Any]]) -> Tuple[List[Dict[str, Any]], RefinementReport]:
+    def refine_rows(
+        self,
+        rows: Iterable[Mapping[str, Any]],
+        *,
+        normalize_headers: bool = True,
+    ) -> Tuple[List[Dict[str, Any]], RefinementReport]:
         total_rows = 0
         kept_rows = 0
         dropped_missing_required = 0
@@ -147,7 +154,7 @@ class CrashDataRefiner:
 
         for raw_row in rows:
             total_rows += 1
-            row = self._normalize_row(raw_row)
+            row = self._normalize_row(raw_row) if normalize_headers else dict(raw_row)
 
             if not self._has_required_columns(row):
                 dropped_missing_required += 1
@@ -222,6 +229,65 @@ class CrashDataRefiner:
             coerced_booleans=coerced_booleans,
         )
         return refined_rows, report
+
+    def filter_rows_by_boundary(
+        self,
+        rows: Iterable[Mapping[str, Any]],
+        *,
+        boundary: PolygonBoundary,
+        latitude_column: str,
+        longitude_column: str,
+        normalize_headers: bool = True,
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], BoundaryFilterReport]:
+        lat_column = _normalize_header(latitude_column)
+        lon_column = _normalize_header(longitude_column)
+
+        included: List[Dict[str, Any]] = []
+        excluded: List[Dict[str, Any]] = []
+        invalid: List[Dict[str, Any]] = []
+        total_rows = 0
+
+        for raw_row in rows:
+            total_rows += 1
+            row = self._normalize_row(raw_row) if normalize_headers else dict(raw_row)
+
+            lat = parse_coordinate(row.get(lat_column))
+            lon = parse_coordinate(row.get(lon_column))
+
+            if lat is None or lon is None:
+                invalid.append(row)
+                continue
+
+            if point_in_polygon(lon, lat, boundary):
+                included.append(row)
+            else:
+                excluded.append(row)
+
+        report = BoundaryFilterReport(
+            total_rows=total_rows,
+            included_rows=len(included),
+            excluded_rows=len(excluded),
+            invalid_rows=len(invalid),
+        )
+        return included, excluded, invalid, report
+
+    def refine_rows_with_boundary(
+        self,
+        rows: Iterable[Mapping[str, Any]],
+        *,
+        boundary: PolygonBoundary,
+        latitude_column: str,
+        longitude_column: str,
+    ) -> Tuple[List[Dict[str, Any]], RefinementReport, BoundaryFilterReport, List[Dict[str, Any]]]:
+        included, _excluded, invalid, boundary_report = self.filter_rows_by_boundary(
+            rows,
+            boundary=boundary,
+            latitude_column=latitude_column,
+            longitude_column=longitude_column,
+            normalize_headers=True,
+        )
+        refined_rows, report = self.refine_rows(included, normalize_headers=False)
+        return refined_rows, report, boundary_report, invalid
 
     def _normalize_row(self, row: Mapping[str, Any]) -> Dict[str, Any]:
         normalized: Dict[str, Any] = {}
