@@ -11,6 +11,7 @@ requires-python = ">=3.10"
 readme = "docs/README.md"
 dependencies = [
     "openpyxl>=3.1",
+    "tkintermapview",
 ]
 
 [project.optional-dependencies]

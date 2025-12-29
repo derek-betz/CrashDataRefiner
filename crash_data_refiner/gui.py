@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 import queue
 import threading
@@ -10,7 +11,13 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Any, Dict, List, Optional, Tuple
 import webbrowser
 
+try:
+    from tkintermapview import TkinterMapView
+except Exception:  # pragma: no cover - optional dependency for GUI previews
+    TkinterMapView = None
+
 from .geo import load_kmz_polygon, parse_coordinate
+from .kmz_report import write_kmz_report
 from .map_report import write_map_report
 from .refiner import CrashDataRefiner
 from .refiner import _normalize_header
@@ -104,7 +111,12 @@ class CrashRefinerApp:
         self.root.title("Crash Data Refiner")
 
         self._queue: queue.Queue[PipelineMessage] = queue.Queue()
-        self._last_map_report: Optional[Path] = None
+        self._map_request_id = 0
+        self._map_update_after_id: Optional[str] = None
+        self._map_markers: List[Any] = []
+        self._map_polygon: Optional[Any] = None
+        self._map_supported = TkinterMapView is not None
+        self._outputs_dir = Path(__file__).resolve().parents[1] / "outputs"
 
         self._configure_theme()
         self._build_layout()
@@ -364,6 +376,10 @@ class CrashRefinerApp:
         current_row += 1
         self.lat_combo = ttk.Combobox(card, textvariable=self.lat_column_var, state="readonly")
         self.lat_combo.grid(row=current_row, column=0, sticky="ew", pady=(4, 8))
+        self.lat_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self._request_reference_map_update(),
+        )
         current_row += 1
 
         ttk.Label(card, text="Longitude Column", style="Body.TLabel").grid(
@@ -372,6 +388,10 @@ class CrashRefinerApp:
         current_row += 1
         self.lon_combo = ttk.Combobox(card, textvariable=self.lon_column_var, state="readonly")
         self.lon_combo.grid(row=current_row, column=0, sticky="ew", pady=(4, 8))
+        self.lon_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self._request_reference_map_update(),
+        )
         current_row += 1
 
         current_row = self._add_file_picker(
@@ -411,7 +431,7 @@ class CrashRefinerApp:
         card = ttk.Frame(parent, style="Card.TFrame", padding=(20, 18))
         card.grid(row=0, column=1, sticky="nsew")
         card.columnconfigure(0, weight=1)
-        card.rowconfigure(2, weight=1)
+        card.rowconfigure(3, weight=1)
 
         ttk.Label(card, text="Run Summary", style="SectionHeading.TLabel").grid(
             row=0, column=0, sticky="w", pady=(0, 12)
@@ -431,8 +451,10 @@ class CrashRefinerApp:
         self._add_metric(summary, "Excluded", self.excluded_var, 1)
         self._add_metric(summary, "Invalid Lat/Long", self.invalid_var, 2)
 
+        self._build_reference_map(card, row=2)
+
         log_frame = ttk.Frame(card, style="Glass.TFrame", padding=(12, 12))
-        log_frame.grid(row=2, column=0, sticky="nsew")
+        log_frame.grid(row=3, column=0, sticky="nsew")
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
 
@@ -455,18 +477,8 @@ class CrashRefinerApp:
         self.log_widget.configure(yscrollcommand=scrollbar.set)
 
         action_row = ttk.Frame(card, style="Card.TFrame")
-        action_row.grid(row=3, column=0, sticky="ew", pady=(16, 0))
+        action_row.grid(row=4, column=0, sticky="ew", pady=(16, 0))
         action_row.columnconfigure(0, weight=1)
-        action_row.columnconfigure(1, weight=1)
-
-        self.map_button = ttk.Button(
-            action_row,
-            text="Open Map Report",
-            style="Secondary.TButton",
-            command=self._open_map_report,
-            state=tk.DISABLED,
-        )
-        self.map_button.grid(row=0, column=0, sticky="ew", padx=(0, 8))
 
         self.open_folder_button = ttk.Button(
             action_row,
@@ -475,7 +487,7 @@ class CrashRefinerApp:
             command=self._open_output_folder,
             state=tk.DISABLED,
         )
-        self.open_folder_button.grid(row=0, column=1, sticky="ew")
+        self.open_folder_button.grid(row=0, column=0, sticky="ew")
 
     def _add_metric(self, parent: ttk.Frame, label: str, variable: tk.StringVar, column: int) -> None:
         block = ttk.Frame(parent, style="Glass.TFrame")
@@ -487,6 +499,36 @@ class CrashRefinerApp:
         ttk.Label(block, text=label, style="MetricCaption.TLabel").grid(
             row=1, column=0, sticky="w"
         )
+
+    def _build_reference_map(self, parent: ttk.Frame, *, row: int) -> None:
+        map_frame = ttk.Frame(parent, style="Glass.TFrame", padding=(12, 12))
+        map_frame.grid(row=row, column=0, sticky="nsew", pady=(0, 16))
+        map_frame.columnconfigure(0, weight=1)
+        map_frame.rowconfigure(2, weight=1)
+
+        ttk.Label(map_frame, text="Reference Map", style="Body.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+
+        self.map_status_var = tk.StringVar(
+            value="Load crash data and KMZ boundary to preview."
+        )
+        ttk.Label(map_frame, textvariable=self.map_status_var, style="Hint.TLabel").grid(
+            row=1, column=0, sticky="w", pady=(4, 8)
+        )
+
+        if self._map_supported and TkinterMapView:
+            self.map_widget = TkinterMapView(map_frame, corner_radius=8, height=240)
+            self.map_widget.grid(row=2, column=0, sticky="nsew")
+            self.map_widget.set_position(39.5, -98.35)
+            self.map_widget.set_zoom(4)
+        else:
+            self.map_widget = None
+            ttk.Label(
+                map_frame,
+                text="Install tkintermapview to enable the reference map preview.",
+                style="Hint.TLabel",
+            ).grid(row=2, column=0, sticky="w")
 
     def _add_file_picker(
         self,
@@ -522,7 +564,10 @@ class CrashRefinerApp:
         save_dialog: bool,
     ) -> None:
         if save_dialog:
-            path = filedialog.asksaveasfilename(filetypes=filetypes)
+            path = filedialog.asksaveasfilename(
+                filetypes=filetypes,
+                initialdir=str(self._ensure_outputs_dir()),
+            )
         else:
             path = filedialog.askopenfilename(filetypes=filetypes)
         if path:
@@ -543,18 +588,42 @@ class CrashRefinerApp:
         self._suggest_output_path(path)
 
     def _on_select_kmz_file(self) -> None:
-        return
+        self._request_reference_map_update()
 
     def _on_select_output_file(self) -> None:
+        output_path = self.output_path_var.get().strip()
+        if output_path:
+            resolved = self._resolve_output_path(output_path)
+            if str(resolved) != output_path:
+                self.output_path_var.set(str(resolved))
         self._update_invalid_path_label()
 
     def _update_invalid_path_label(self) -> None:
         output_path = self.output_path_var.get().strip()
         if not output_path:
-            self.invalid_path_var.set("Invalid coordinate output will be created next to the refined file.")
+            outputs_dir = self._ensure_outputs_dir()
+            self.invalid_path_var.set(
+                f"Outputs will be saved to {outputs_dir}. Invalid coordinate output will be created there."
+            )
             return
-        invalid_path = self._invalid_output_path(Path(output_path))
-        self.invalid_path_var.set(f"Invalid coordinate output: {invalid_path}")
+        resolved = self._resolve_output_path(output_path)
+        invalid_path = self._invalid_output_path(resolved)
+        outputs_dir = self._ensure_outputs_dir()
+        self.invalid_path_var.set(
+            f"Outputs will be saved to {outputs_dir}. Invalid coordinate output: {invalid_path}"
+        )
+
+    def _ensure_outputs_dir(self) -> Path:
+        self._outputs_dir.mkdir(parents=True, exist_ok=True)
+        return self._outputs_dir
+
+    def _resolve_output_path(self, output_path: str) -> Path:
+        outputs_dir = self._ensure_outputs_dir()
+        if output_path:
+            filename = Path(output_path).name
+            if filename:
+                return outputs_dir / filename
+        return outputs_dir / "refined_output.csv"
 
     def _update_column_choices(self, headers: List[str]) -> None:
         self.lat_combo["values"] = headers
@@ -565,6 +634,100 @@ class CrashRefinerApp:
             self.lat_column_var.set(lat_guess)
         if lon_guess:
             self.lon_column_var.set(lon_guess)
+        self._request_reference_map_update()
+
+    def _request_reference_map_update(self) -> None:
+        if not self._map_supported:
+            return
+        if self._map_update_after_id is not None:
+            try:
+                self.root.after_cancel(self._map_update_after_id)
+            except tk.TclError:
+                pass
+        self._map_update_after_id = self.root.after(350, self._schedule_reference_map_update)
+
+    def _schedule_reference_map_update(self) -> None:
+        self._map_update_after_id = None
+
+        data_path = self.data_path_var.get().strip()
+        kmz_path = self.kmz_path_var.get().strip()
+        lat_column = self.lat_column_var.get().strip()
+        lon_column = self.lon_column_var.get().strip()
+
+        if not data_path or not kmz_path:
+            self._set_map_status("Load crash data and KMZ boundary to preview.")
+            return
+
+        if not lat_column or not lon_column:
+            self._set_map_status("Select latitude and longitude columns to preview.")
+            return
+
+        if not Path(data_path).exists() or not Path(kmz_path).exists():
+            self._set_map_status("Waiting for valid crash data and KMZ boundary.")
+            return
+
+        self._map_request_id += 1
+        request_id = self._map_request_id
+        self._set_map_status("Loading map preview...")
+
+        worker = threading.Thread(
+            target=self._build_reference_map_preview,
+            args=(request_id, data_path, kmz_path, lat_column, lon_column),
+            daemon=True,
+        )
+        worker.start()
+
+    def _build_reference_map_preview(
+        self,
+        request_id: int,
+        data_path: str,
+        kmz_path: str,
+        lat_column: str,
+        lon_column: str,
+    ) -> None:
+        try:
+            boundary = load_kmz_polygon(kmz_path)
+            data = read_spreadsheet(data_path)
+
+            refiner = CrashDataRefiner()
+            included, _excluded, _invalid, report = refiner.filter_rows_by_boundary(
+                data.rows,
+                boundary=boundary,
+                latitude_column=lat_column,
+                longitude_column=lon_column,
+                normalize_headers=True,
+            )
+
+            lat_key = _normalize_header(lat_column)
+            lon_key = _normalize_header(lon_column)
+            points = []
+            for row in included:
+                lat = parse_coordinate(row.get(lat_key))
+                lon = parse_coordinate(row.get(lon_key))
+                if lat is not None and lon is not None:
+                    points.append((lat, lon))
+
+            payload = {
+                "request_id": request_id,
+                "boundary": boundary,
+                "points": points,
+                "report": report,
+            }
+            self._queue.put(
+                PipelineMessage(level="map", message="Reference map updated.", payload=payload)
+            )
+        except Exception as exc:
+            self._queue.put(
+                PipelineMessage(
+                    level="map_error",
+                    message=str(exc),
+                    payload={"request_id": request_id},
+                )
+            )
+
+    def _set_map_status(self, text: str) -> None:
+        if hasattr(self, "map_status_var"):
+            self.map_status_var.set(text)
 
     def _guess_lat_lon(self, headers: List[str]) -> Tuple[Optional[str], Optional[str]]:
         scored = [(self._score_lat_header(h), h) for h in headers]
@@ -606,13 +769,20 @@ class CrashRefinerApp:
     def _suggest_output_path(self, input_path: str) -> None:
         input_file = Path(input_path)
         suffix = input_file.suffix or ".csv"
-        suggested = input_file.with_name(f"{input_file.stem}_refined{suffix}")
+        outputs_dir = self._ensure_outputs_dir()
+        suggested = outputs_dir / f"{input_file.stem}_refined{suffix}"
         if not self.output_path_var.get().strip():
             self.output_path_var.set(str(suggested))
             self._update_invalid_path_label()
 
     def _invalid_output_path(self, output_path: Path) -> Path:
         return output_path.with_name(f"Crashes Without Valid Lat-Long Data{output_path.suffix}")
+
+    def _kmz_output_path(self, output_path: Path) -> Path:
+        base_name = output_path.stem
+        if base_name.lower().endswith("_refined"):
+            base_name = base_name[:-8]
+        return output_path.with_name(f"{base_name}_Crash Data.kmz")
 
     def _on_run(self) -> None:
         data_path = self.data_path_var.get().strip()
@@ -634,9 +804,13 @@ class CrashRefinerApp:
             messagebox.showwarning("Crash Data Refiner", "Select latitude and longitude columns.")
             return
 
+        resolved_output = self._resolve_output_path(output_path)
+        if str(resolved_output) != output_path:
+            self.output_path_var.set(str(resolved_output))
+            output_path = str(resolved_output)
+
         self._append_log("Starting refinement pipeline...")
         self.run_button.configure(state=tk.DISABLED)
-        self.map_button.configure(state=tk.DISABLED)
         self.open_folder_button.configure(state=tk.DISABLED)
         self.progress.start(10)
 
@@ -667,7 +841,7 @@ class CrashRefinerApp:
                 longitude_column=lon_column,
             )
 
-            output_file = Path(output_path)
+            output_file = self._resolve_output_path(output_path)
             write_spreadsheet(str(output_file), refined_rows)
 
             invalid_path = self._invalid_output_path(output_file)
@@ -692,12 +866,21 @@ class CrashRefinerApp:
                 invalid_count=boundary_report.invalid_rows,
             )
 
+            kmz_path = self._kmz_output_path(output_file)
+            kmz_count = write_kmz_report(
+                str(kmz_path),
+                rows=refined_rows,
+                latitude_column=lat_column,
+                longitude_column=lon_column,
+            )
+
             payload = {
                 "included": boundary_report.included_rows,
                 "excluded": boundary_report.excluded_rows,
                 "invalid": boundary_report.invalid_rows,
-                "map_report": map_report_path,
-                "output_folder": output_file.parent,
+                "kmz_path": str(kmz_path),
+                "kmz_count": kmz_count,
+                "output_folder": str(self._ensure_outputs_dir()),
             }
             self._queue.put(PipelineMessage(level="success", message="Refinement complete.", payload=payload))
         except Exception as exc:
@@ -711,6 +894,10 @@ class CrashRefinerApp:
                     self._handle_success(message)
                 elif message.level == "error":
                     self._handle_error(message)
+                elif message.level == "map":
+                    self._handle_reference_map_update(message)
+                elif message.level == "map_error":
+                    self._handle_reference_map_error(message)
                 else:
                     self._append_log(message.message)
         except queue.Empty:
@@ -724,10 +911,11 @@ class CrashRefinerApp:
         self.invalid_var.set(str(payload.get("invalid", 0)))
         self._append_log(message.message)
 
-        map_report = payload.get("map_report")
-        if map_report:
-            self._last_map_report = Path(map_report)
-            self.map_button.configure(state=tk.NORMAL)
+        kmz_path = payload.get("kmz_path")
+        kmz_count = payload.get("kmz_count")
+        if kmz_path:
+            count_text = f" ({kmz_count} placemarks)" if kmz_count is not None else ""
+            self._append_log(f"KMZ output saved: {kmz_path}{count_text}")
 
         output_folder = payload.get("output_folder")
         if output_folder:
@@ -736,14 +924,103 @@ class CrashRefinerApp:
         self.run_button.configure(state=tk.NORMAL)
         self.progress.stop()
 
-        if self._last_map_report and self._last_map_report.exists():
-            webbrowser.open(self._last_map_report.as_uri())
-
     def _handle_error(self, message: PipelineMessage) -> None:
         self._append_log(f"Error: {message.message}")
         self.run_button.configure(state=tk.NORMAL)
         self.progress.stop()
         messagebox.showerror("Crash Data Refiner", message.message)
+
+    def _handle_reference_map_update(self, message: PipelineMessage) -> None:
+        payload = message.payload or {}
+        request_id = payload.get("request_id")
+        if request_id != self._map_request_id:
+            return
+
+        boundary = payload.get("boundary")
+        points = payload.get("points", [])
+        report = payload.get("report")
+
+        self._update_reference_map(boundary, points)
+
+        if report:
+            self._set_map_status(
+                "Included: "
+                f"{report.included_rows} | Excluded: {report.excluded_rows} | Without Lat/Long Data: {report.invalid_rows}"
+            )
+        else:
+            self._set_map_status(f"{len(points)} points loaded.")
+
+    def _handle_reference_map_error(self, message: PipelineMessage) -> None:
+        payload = message.payload or {}
+        request_id = payload.get("request_id")
+        if request_id != self._map_request_id:
+            return
+        self._set_map_status(f"Reference map unavailable: {message.message}")
+
+    def _update_reference_map(
+        self,
+        boundary: Any,
+        points: List[Tuple[float, float]],
+    ) -> None:
+        if not self.map_widget:
+            return
+
+        self._clear_reference_map()
+
+        if boundary:
+            positions = [(lat, lon) for lon, lat in boundary.outer]
+            if positions:
+                self._map_polygon = self._draw_reference_polygon(positions)
+                min_lon, min_lat, max_lon, max_lat = boundary.bbox
+                center_lat = (min_lat + max_lat) / 2
+                center_lon = (min_lon + max_lon) / 2
+                self.map_widget.set_position(center_lat, center_lon)
+                self.map_widget.set_zoom(self._estimate_zoom(boundary))
+
+        for lat, lon in points:
+            marker = self.map_widget.set_marker(lat, lon, text="")
+            self._map_markers.append(marker)
+
+    def _clear_reference_map(self) -> None:
+        for marker in self._map_markers:
+            try:
+                marker.delete()
+            except Exception:
+                pass
+        self._map_markers = []
+
+        if self._map_polygon:
+            try:
+                self._map_polygon.delete()
+            except Exception:
+                pass
+            self._map_polygon = None
+
+    def _draw_reference_polygon(self, positions: List[Tuple[float, float]]) -> Any:
+        if not self.map_widget:
+            return None
+        if hasattr(self.map_widget, "set_polygon"):
+            return self.map_widget.set_polygon(
+                positions,
+                outline_color=self._palette["accent"],
+                fill_color=self._palette["accent_soft"],
+                border_width=2,
+            )
+        if positions and positions[0] != positions[-1]:
+            positions = positions + [positions[0]]
+        return self.map_widget.set_path(
+            positions,
+            color=self._palette["accent"],
+            width=2,
+        )
+
+    def _estimate_zoom(self, boundary: Any) -> int:
+        min_lon, min_lat, max_lon, max_lat = boundary.bbox
+        span = max(max_lon - min_lon, max_lat - min_lat)
+        if span <= 0:
+            return 12
+        zoom = int(round(math.log2(360 / span)))
+        return max(3, min(18, zoom))
 
     def _append_log(self, text: str) -> None:
         self.log_widget.configure(state=tk.NORMAL)
@@ -751,15 +1028,8 @@ class CrashRefinerApp:
         self.log_widget.configure(state=tk.DISABLED)
         self.log_widget.see(tk.END)
 
-    def _open_map_report(self) -> None:
-        if self._last_map_report and self._last_map_report.exists():
-            webbrowser.open(self._last_map_report.as_uri())
-
     def _open_output_folder(self) -> None:
-        output_path = self.output_path_var.get().strip()
-        if not output_path:
-            return
-        folder = Path(output_path).parent
+        folder = self._ensure_outputs_dir()
         if folder.exists():
             try:
                 import os

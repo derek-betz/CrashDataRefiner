@@ -13,6 +13,9 @@ quickly normalize disparate data sources.
   boolean columns while gracefully handling blanks and malformed values.
 - **Relevance boundary filtering** - keep only crash points within a KMZ
   polygon (single polygon required) and report excluded/invalid coordinates.
+- **KMZ crash output** - generate a Google Earth-ready KMZ using the standard
+  crash data template, including the click preview (the bubble shown when a
+  crash is clicked).
 - **Duplicate detection** - drop repeated records by specifying identifying
   columns.
 - **Gap filling** - inject default values for missing columns before exporting.
@@ -70,9 +73,14 @@ Or double-click `launch_gui.pyw` on Windows. The GUI expects:
 
 Outputs include:
 
-- The refined crash data (inside the polygon).
+- The refined crash data (inside the polygon) saved under `outputs/`.
 - `Crashes Without Valid Lat-Long Data` saved next to the refined output.
+- A KMZ crash file (`*_Crash Data.kmz`) formatted like the standard output with
+  the crash narrative in the click preview bubble.
 - A map report HTML file showing the polygon and included crashes, plus counts.
+
+The GUI also shows a reference map preview automatically once the crash data
+file and KMZ boundary are loaded.
 
 ## Python API
 
