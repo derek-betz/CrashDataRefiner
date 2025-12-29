@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import math
 from pathlib import Path
 import queue
+import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -125,22 +126,56 @@ class CrashRefinerApp:
 
     def _ensure_window_size(self) -> None:
         self.root.update_idletasks()
-        screen_width = self.root.winfo_screenwidth()
-        screen_height = self.root.winfo_screenheight()
+        work_left, work_top, work_right, work_bottom = self._get_work_area()
+        work_width = max(work_right - work_left, 1)
+        work_height = max(work_bottom - work_top, 1)
+        safety_margin = self._get_work_area_margin()
+        safe_bottom = work_bottom - safety_margin
 
         req_width = max(self.root.winfo_reqwidth(), 1100)
         req_height = max(self.root.winfo_reqheight(), 820)
 
-        target_width = min(req_width, int(screen_width * 0.95))
-        target_height = min(req_height, int(screen_height * 0.9))
+        target_width = min(req_width, int(work_width * 0.97))
+        target_height = min(req_height, int(work_height * 0.97) - safety_margin)
+        target_height = max(target_height, 480)
 
-        x = max((screen_width - target_width) // 2, 0)
-        y = max((screen_height - target_height) // 2, 0)
+        x = work_left + max((work_width - target_width) // 2, 0)
+        y = work_top + max((work_height - target_height) // 2, 0)
         self.root.geometry(f"{int(target_width)}x{int(target_height)}+{int(x)}+{int(y)}")
 
-        min_width = min(int(target_width), int(screen_width * 0.9))
-        min_height = min(int(target_height), int(screen_height * 0.85))
+        self.root.update_idletasks()
+        bottom = self.root.winfo_rooty() + self.root.winfo_height()
+        if bottom > safe_bottom:
+            overflow = bottom - safe_bottom
+            target_height = max(int(target_height - overflow - safety_margin), 480)
+            y = work_top + max((work_height - target_height) // 2, 0)
+            self.root.geometry(f"{int(target_width)}x{int(target_height)}+{int(x)}+{int(y)}")
+
+        min_width = min(int(target_width), int(work_width * 0.9))
+        min_height = min(int(target_height), int(work_height * 0.85) - safety_margin)
         self.root.minsize(min_width, min_height)
+
+    def _get_work_area(self) -> Tuple[int, int, int, int]:
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                from ctypes import wintypes
+
+                rect = wintypes.RECT()
+                if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0):
+                    return rect.left, rect.top, rect.right, rect.bottom
+            except Exception:
+                pass
+        return 0, 0, screen_width, screen_height
+
+    def _get_work_area_margin(self) -> int:
+        try:
+            scaling = float(self.root.tk.call("tk", "scaling"))
+        except tk.TclError:
+            scaling = 1.0
+        return max(int(18 * scaling), 12)
 
     def _configure_theme(self) -> None:
         try:
@@ -312,7 +347,7 @@ class CrashRefinerApp:
         header.create_window(32, 30, anchor="nw", window=header_title)
         header_subtitle = tk.Label(
             header,
-            text="KMZ Relevance Boundary + refined crash outputs",
+            text="Filter Raw Crash Data and Generate Useful Crash KMZ Reports",
             bg=self._palette["hero_start"],
             fg=self._palette["muted"],
             font=("Segoe UI", 12),
@@ -356,7 +391,7 @@ class CrashRefinerApp:
 
         current_row = self._add_file_picker(
             card,
-            label="KMZ Polygon",
+            label="Relevance Boundary (KMZ Polygon)",
             variable=self.kmz_path_var,
             row=current_row,
             filetypes=[("KMZ Files", "*.kmz")],
@@ -425,20 +460,15 @@ class CrashRefinerApp:
 
         self.progress = ttk.Progressbar(button_row, mode="indeterminate")
         self.progress.grid(row=0, column=1, sticky="ew")
-        self._update_invalid_path_label()
-
-    def _build_status(self, parent: ttk.Frame) -> None:
-        card = ttk.Frame(parent, style="Card.TFrame", padding=(20, 18))
-        card.grid(row=0, column=1, sticky="nsew")
-        card.columnconfigure(0, weight=1)
-        card.rowconfigure(3, weight=1)
+        current_row += 1
 
         ttk.Label(card, text="Run Summary", style="SectionHeading.TLabel").grid(
-            row=0, column=0, sticky="w", pady=(0, 12)
+            row=current_row, column=0, sticky="w", pady=(16, 12)
         )
+        current_row += 1
 
         summary = ttk.Frame(card, style="Glass.TFrame", padding=(16, 14))
-        summary.grid(row=1, column=0, sticky="ew", pady=(0, 16))
+        summary.grid(row=current_row, column=0, sticky="ew", pady=(0, 4))
         summary.columnconfigure(0, weight=1)
         summary.columnconfigure(1, weight=1)
         summary.columnconfigure(2, weight=1)
@@ -451,10 +481,19 @@ class CrashRefinerApp:
         self._add_metric(summary, "Excluded", self.excluded_var, 1)
         self._add_metric(summary, "Invalid Lat/Long", self.invalid_var, 2)
 
-        self._build_reference_map(card, row=2)
+        self._update_invalid_path_label()
+
+    def _build_status(self, parent: ttk.Frame) -> None:
+        card = ttk.Frame(parent, style="Card.TFrame", padding=(20, 18))
+        card.grid(row=0, column=1, sticky="nsew")
+        card.columnconfigure(0, weight=1)
+        card.rowconfigure(0, weight=3)
+        card.rowconfigure(1, weight=2)
+
+        self._build_reference_map(card, row=0)
 
         log_frame = ttk.Frame(card, style="Glass.TFrame", padding=(12, 12))
-        log_frame.grid(row=3, column=0, sticky="nsew")
+        log_frame.grid(row=1, column=0, sticky="nsew")
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
 
@@ -477,7 +516,7 @@ class CrashRefinerApp:
         self.log_widget.configure(yscrollcommand=scrollbar.set)
 
         action_row = ttk.Frame(card, style="Card.TFrame")
-        action_row.grid(row=4, column=0, sticky="ew", pady=(16, 0))
+        action_row.grid(row=2, column=0, sticky="ew", pady=(16, 0))
         action_row.columnconfigure(0, weight=1)
 
         self.open_folder_button = ttk.Button(
@@ -518,7 +557,7 @@ class CrashRefinerApp:
         )
 
         if self._map_supported and TkinterMapView:
-            self.map_widget = TkinterMapView(map_frame, corner_radius=8, height=240)
+            self.map_widget = TkinterMapView(map_frame, corner_radius=8, height=320)
             self.map_widget.grid(row=2, column=0, sticky="nsew")
             self.map_widget.set_position(39.5, -98.35)
             self.map_widget.set_zoom(4)
@@ -602,16 +641,11 @@ class CrashRefinerApp:
         output_path = self.output_path_var.get().strip()
         if not output_path:
             outputs_dir = self._ensure_outputs_dir()
-            self.invalid_path_var.set(
-                f"Outputs will be saved to {outputs_dir}. Invalid coordinate output will be created there."
-            )
+            self.invalid_path_var.set(f"Outputs will be saved to {outputs_dir}.")
             return
         resolved = self._resolve_output_path(output_path)
-        invalid_path = self._invalid_output_path(resolved)
         outputs_dir = self._ensure_outputs_dir()
-        self.invalid_path_var.set(
-            f"Outputs will be saved to {outputs_dir}. Invalid coordinate output: {invalid_path}"
-        )
+        self.invalid_path_var.set(f"Outputs will be saved to {outputs_dir}.")
 
     def _ensure_outputs_dir(self) -> Path:
         self._outputs_dir.mkdir(parents=True, exist_ok=True)
