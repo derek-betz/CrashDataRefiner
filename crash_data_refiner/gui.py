@@ -20,6 +20,7 @@ except Exception:  # pragma: no cover - optional dependency for GUI previews
 from .geo import load_kmz_polygon, parse_coordinate
 from .kmz_report import write_kmz_report
 from .map_report import write_map_report
+from .pdf_report import generate_pdf_report
 from .refiner import CrashDataRefiner
 from .refiner import _normalize_header
 from .spreadsheets import read_spreadsheet, read_spreadsheet_headers, write_spreadsheet
@@ -118,6 +119,7 @@ class CrashRefinerApp:
         self._map_polygon: Optional[Any] = None
         self._map_supported = TkinterMapView is not None
         self._outputs_dir = Path(__file__).resolve().parents[1] / "outputs"
+        self._last_pdf_path: Optional[Path] = None
 
         self._configure_theme()
         self._build_layout()
@@ -325,6 +327,16 @@ class CrashRefinerApp:
             fieldbackground=[("readonly", palette["field"]), ("active", palette["field_hover"])],
         )
         style.configure("TScrollbar", background=palette["surface_alt"], troughcolor=palette["field"])
+        style.configure(
+            "TCheckbutton",
+            background=palette["surface_alt"],
+            foreground=palette["text"],
+        )
+        style.map(
+            "TCheckbutton",
+            background=[("active", palette["field_hover"])],
+            foreground=[("disabled", palette["muted"])],
+        )
 
     def _build_layout(self) -> None:
         container = ttk.Frame(self.root, style="Background.TFrame")
@@ -347,7 +359,7 @@ class CrashRefinerApp:
         header.create_window(32, 30, anchor="nw", window=header_title)
         header_subtitle = tk.Label(
             header,
-            text="Filter Raw Crash Data and Generate Useful Crash KMZ Reports",
+            text="Filter Raw Crash Data and Generate KMZ, Map, and PDF Reports",
             bg=self._palette["hero_start"],
             fg=self._palette["muted"],
             font=("Segoe UI", 12),
@@ -360,12 +372,58 @@ class CrashRefinerApp:
         body.columnconfigure(1, weight=4)
         body.rowconfigure(0, weight=1)
 
-        self._build_inputs(body)
+        self._build_inputs_panel(body)
         self._build_status(body)
+
+    def _build_inputs_panel(self, parent: ttk.Frame) -> None:
+        outer = ttk.Frame(parent, style="Background.TFrame")
+        outer.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(0, weight=1)
+
+        canvas = tk.Canvas(
+            outer,
+            background=self._palette["base"],
+            highlightthickness=0,
+            bd=0,
+        )
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        inner = ttk.Frame(canvas, style="Background.TFrame")
+        window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.columnconfigure(0, weight=1)
+
+        def _sync_scroll_region(_event: tk.Event) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _sync_canvas_width(event: tk.Event) -> None:
+            canvas.itemconfigure(window_id, width=event.width)
+
+        def _on_mousewheel(event: tk.Event) -> None:
+            if event.delta:
+                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        def _bind_mousewheel(_event: tk.Event) -> None:
+            canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        def _unbind_mousewheel(_event: tk.Event) -> None:
+            canvas.unbind_all("<MouseWheel>")
+
+        inner.bind("<Configure>", _sync_scroll_region)
+        canvas.bind("<Configure>", _sync_canvas_width)
+        canvas.bind("<Enter>", _bind_mousewheel)
+        canvas.bind("<Leave>", _unbind_mousewheel)
+        inner.bind("<Enter>", _bind_mousewheel)
+        inner.bind("<Leave>", _unbind_mousewheel)
+
+        self._build_inputs(inner)
 
     def _build_inputs(self, parent: ttk.Frame) -> None:
         card = ttk.Frame(parent, style="Card.TFrame", padding=(16, 12))
-        card.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
+        card.grid(row=0, column=0, sticky="nsew")
         card.columnconfigure(0, weight=1)
 
         ttk.Label(card, text="Project Inputs", style="SectionHeading.TLabel").grid(
@@ -378,6 +436,10 @@ class CrashRefinerApp:
         self.lat_column_var = tk.StringVar()
         self.lon_column_var = tk.StringVar()
         self.invalid_path_var = tk.StringVar()
+        self.generate_pdf_var = tk.BooleanVar(value=True)
+        self.pdf_path_hint_var = tk.StringVar()
+        self.pdf_data_path_var = tk.StringVar()
+        self.pdf_data_hint_var = tk.StringVar()
 
         current_row = 1
         current_row = self._add_file_picker(
@@ -444,6 +506,68 @@ class CrashRefinerApp:
             textvariable=self.invalid_path_var,
             style="Hint.TLabel",
         ).grid(row=current_row, column=0, sticky="w", pady=(0, 10))
+        current_row += 1
+
+        ttk.Label(card, text="Report Outputs", style="SectionHeading.TLabel").grid(
+            row=current_row, column=0, sticky="w", pady=(12, 10)
+        )
+        current_row += 1
+
+        output_frame = ttk.Frame(card, style="Glass.TFrame", padding=(12, 10))
+        output_frame.grid(row=current_row, column=0, sticky="ew", pady=(0, 12))
+        output_frame.columnconfigure(0, weight=1)
+
+        pdf_check = ttk.Checkbutton(
+            output_frame,
+            text="Generate full crash report PDF",
+            variable=self.generate_pdf_var,
+            command=self._update_invalid_path_label,
+        )
+        pdf_check.grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            output_frame,
+            text="One page per crash with aerial imagery and bulleted details.",
+            style="Hint.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(4, 8))
+
+        output_row = 2
+        output_row = self._add_file_picker(
+            output_frame,
+            label="PDF Report Data File (optional)",
+            variable=self.pdf_data_path_var,
+            row=output_row,
+            filetypes=[("CSV or Excel", "*.csv *.xlsx *.xlsm")],
+            command=self._on_select_pdf_data_file,
+        )
+        ttk.Label(
+            output_frame,
+            text="Leave blank to use the refined output file.",
+            style="Hint.TLabel",
+        ).grid(row=output_row, column=0, sticky="w", pady=(0, 6))
+        output_row += 1
+        ttk.Label(
+            output_frame,
+            textvariable=self.pdf_path_hint_var,
+            style="Hint.TLabel",
+        ).grid(row=output_row, column=0, sticky="w")
+        output_row += 1
+        ttk.Label(
+            output_frame,
+            textvariable=self.pdf_data_hint_var,
+            style="Hint.TLabel",
+        ).grid(row=output_row, column=0, sticky="w", pady=(2, 0))
+        current_row += 1
+
+        report_row = ttk.Frame(card, style="Card.TFrame")
+        report_row.grid(row=current_row, column=0, sticky="ew", pady=(0, 6))
+        report_row.columnconfigure(0, weight=1)
+        self.generate_report_button = ttk.Button(
+            report_row,
+            text="Generate Report",
+            style="Secondary.TButton",
+            command=self._on_generate_report,
+        )
+        self.generate_report_button.grid(row=0, column=0, sticky="ew")
         current_row += 1
 
         button_row = ttk.Frame(card, style="Card.TFrame")
@@ -527,6 +651,16 @@ class CrashRefinerApp:
             state=tk.DISABLED,
         )
         self.open_folder_button.grid(row=0, column=0, sticky="ew")
+
+        action_row.columnconfigure(1, weight=1)
+        self.open_pdf_button = ttk.Button(
+            action_row,
+            text="Open PDF Report",
+            style="Secondary.TButton",
+            command=self._open_pdf_report,
+            state=tk.DISABLED,
+        )
+        self.open_pdf_button.grid(row=0, column=1, sticky="ew", padx=(12, 0))
 
     def _add_metric(self, parent: ttk.Frame, label: str, variable: tk.StringVar, column: int) -> None:
         block = ttk.Frame(parent, style="Glass.TFrame")
@@ -637,15 +771,44 @@ class CrashRefinerApp:
                 self.output_path_var.set(str(resolved))
         self._update_invalid_path_label()
 
+    def _on_select_pdf_data_file(self) -> None:
+        pdf_path = self.pdf_data_path_var.get().strip()
+        if pdf_path:
+            resolved = Path(pdf_path)
+            if resolved.exists() and resolved.is_file():
+                self.pdf_data_path_var.set(str(resolved))
+                try:
+                    headers = read_spreadsheet_headers(str(resolved))
+                except Exception as exc:
+                    messagebox.showerror("Crash Data Refiner", f"Failed to read headers: {exc}")
+                else:
+                    self._update_column_choices(headers, prefer_existing=True)
+        self._update_invalid_path_label()
+
     def _update_invalid_path_label(self) -> None:
         output_path = self.output_path_var.get().strip()
-        if not output_path:
-            outputs_dir = self._ensure_outputs_dir()
-            self.invalid_path_var.set(f"Outputs will be saved to {outputs_dir}.")
-            return
-        resolved = self._resolve_output_path(output_path)
         outputs_dir = self._ensure_outputs_dir()
-        self.invalid_path_var.set(f"Outputs will be saved to {outputs_dir}.")
+        if not output_path:
+            self.invalid_path_var.set(f"Outputs will be saved to {outputs_dir}.")
+            resolved: Optional[Path] = None
+        else:
+            resolved = self._resolve_output_path(output_path)
+            self.invalid_path_var.set(f"Outputs will be saved to {outputs_dir}.")
+
+        pdf_data_path = self.pdf_data_path_var.get().strip()
+        if self.generate_pdf_var.get():
+            if resolved is not None:
+                pdf_path = self._pdf_output_path(resolved)
+                self.pdf_path_hint_var.set(f"PDF report: {pdf_path.name}")
+            else:
+                self.pdf_path_hint_var.set("PDF report will be saved to the outputs folder.")
+            if pdf_data_path:
+                self.pdf_data_hint_var.set(f"PDF data source: {Path(pdf_data_path).name}")
+            else:
+                self.pdf_data_hint_var.set("PDF data source: refined output file")
+        else:
+            self.pdf_path_hint_var.set("PDF report generation is disabled.")
+            self.pdf_data_hint_var.set("PDF data source: disabled")
 
     def _ensure_outputs_dir(self) -> Path:
         self._outputs_dir.mkdir(parents=True, exist_ok=True)
@@ -659,14 +822,21 @@ class CrashRefinerApp:
                 return outputs_dir / filename
         return outputs_dir / "refined_output.csv"
 
-    def _update_column_choices(self, headers: List[str]) -> None:
+    def _update_column_choices(self, headers: List[str], *, prefer_existing: bool = True) -> None:
         self.lat_combo["values"] = headers
         self.lon_combo["values"] = headers
 
+        current_lat = self.lat_column_var.get().strip()
+        current_lon = self.lon_column_var.get().strip()
+
         lat_guess, lon_guess = self._guess_lat_lon(headers)
-        if lat_guess:
+        if prefer_existing and current_lat in headers:
+            self.lat_column_var.set(current_lat)
+        elif lat_guess:
             self.lat_column_var.set(lat_guess)
-        if lon_guess:
+        if prefer_existing and current_lon in headers:
+            self.lon_column_var.set(current_lon)
+        elif lon_guess:
             self.lon_column_var.set(lon_guess)
         self._request_reference_map_update()
 
@@ -818,12 +988,20 @@ class CrashRefinerApp:
             base_name = base_name[:-8]
         return output_path.with_name(f"{base_name}_Crash Data.kmz")
 
+    def _pdf_output_path(self, output_path: Path) -> Path:
+        base_name = output_path.stem
+        if base_name.lower().endswith("_refined"):
+            base_name = base_name[:-8]
+        return output_path.with_name(f"{base_name}_Crash Data Full Report.pdf")
+
     def _on_run(self) -> None:
         data_path = self.data_path_var.get().strip()
         kmz_path = self.kmz_path_var.get().strip()
         output_path = self.output_path_var.get().strip()
         lat_column = self.lat_column_var.get().strip()
         lon_column = self.lon_column_var.get().strip()
+        generate_pdf = self.generate_pdf_var.get()
+        pdf_data_path = self.pdf_data_path_var.get().strip()
 
         if not data_path:
             messagebox.showwarning("Crash Data Refiner", "Select a crash data file to continue.")
@@ -837,6 +1015,12 @@ class CrashRefinerApp:
         if not lat_column or not lon_column:
             messagebox.showwarning("Crash Data Refiner", "Select latitude and longitude columns.")
             return
+        if generate_pdf and pdf_data_path and not Path(pdf_data_path).is_file():
+            messagebox.showwarning(
+                "Crash Data Refiner",
+                "Select a valid PDF report data file or leave it blank.",
+            )
+            return
 
         resolved_output = self._resolve_output_path(output_path)
         if str(resolved_output) != output_path:
@@ -845,12 +1029,76 @@ class CrashRefinerApp:
 
         self._append_log("Starting refinement pipeline...")
         self.run_button.configure(state=tk.DISABLED)
+        self.generate_report_button.configure(state=tk.DISABLED)
         self.open_folder_button.configure(state=tk.DISABLED)
+        self.open_pdf_button.configure(state=tk.DISABLED)
         self.progress.start(10)
+        self._last_pdf_path = None
 
         worker = threading.Thread(
             target=self._run_pipeline,
-            args=(data_path, kmz_path, output_path, lat_column, lon_column),
+            args=(
+                data_path,
+                kmz_path,
+                output_path,
+                lat_column,
+                lon_column,
+                generate_pdf,
+                pdf_data_path,
+            ),
+            daemon=True,
+        )
+        worker.start()
+
+    def _on_generate_report(self) -> None:
+        output_path = self.output_path_var.get().strip()
+        pdf_data_path = self.pdf_data_path_var.get().strip()
+
+        resolved_output = self._resolve_output_path(output_path)
+        pdf_source = Path(pdf_data_path) if pdf_data_path else resolved_output
+        if not pdf_source.exists():
+            messagebox.showwarning(
+                "Crash Data Refiner",
+                "PDF report data file not found. Run refinement or select a PDF data file.",
+            )
+            return
+
+        lat_column = self.lat_column_var.get().strip()
+        lon_column = self.lon_column_var.get().strip()
+        if not lat_column or not lon_column:
+            try:
+                headers = read_spreadsheet_headers(str(pdf_source))
+            except Exception as exc:
+                messagebox.showerror("Crash Data Refiner", f"Failed to read headers: {exc}")
+                return
+            lat_guess, lon_guess = self._guess_lat_lon(headers)
+            if not lat_column and lat_guess:
+                lat_column = lat_guess
+                self.lat_column_var.set(lat_guess)
+            if not lon_column and lon_guess:
+                lon_column = lon_guess
+                self.lon_column_var.set(lon_guess)
+            self._update_column_choices(headers, prefer_existing=True)
+
+        if not lat_column or not lon_column:
+            messagebox.showwarning(
+                "Crash Data Refiner",
+                "Select latitude and longitude columns or ensure the report file includes them.",
+            )
+            return
+
+        pdf_path = self._pdf_output_path(resolved_output)
+
+        self._append_log("Generating PDF crash report...")
+        self.run_button.configure(state=tk.DISABLED)
+        self.generate_report_button.configure(state=tk.DISABLED)
+        self.open_pdf_button.configure(state=tk.DISABLED)
+        self.progress.start(10)
+        self._last_pdf_path = None
+
+        worker = threading.Thread(
+            target=self._run_report_generation,
+            args=(str(pdf_source), str(pdf_path), lat_column, lon_column),
             daemon=True,
         )
         worker.start()
@@ -862,6 +1110,8 @@ class CrashRefinerApp:
         output_path: str,
         lat_column: str,
         lon_column: str,
+        generate_pdf: bool,
+        pdf_data_path: str,
     ) -> None:
         try:
             boundary = load_kmz_polygon(kmz_path)
@@ -908,6 +1158,21 @@ class CrashRefinerApp:
                 longitude_column=lon_column,
             )
 
+            pdf_path = None
+            if generate_pdf:
+                pdf_path = self._pdf_output_path(output_file)
+                if pdf_data_path:
+                    pdf_data = read_spreadsheet(pdf_data_path)
+                    pdf_rows = pdf_data.rows
+                else:
+                    pdf_rows = refined_rows
+                generate_pdf_report(
+                    str(pdf_path),
+                    rows=pdf_rows,
+                    latitude_column=lat_column,
+                    longitude_column=lon_column,
+                )
+
             payload = {
                 "included": boundary_report.included_rows,
                 "excluded": boundary_report.excluded_rows,
@@ -916,9 +1181,34 @@ class CrashRefinerApp:
                 "kmz_count": kmz_count,
                 "output_folder": str(self._ensure_outputs_dir()),
             }
+            if pdf_path:
+                payload["pdf_path"] = str(pdf_path)
             self._queue.put(PipelineMessage(level="success", message="Refinement complete.", payload=payload))
         except Exception as exc:
             self._queue.put(PipelineMessage(level="error", message=str(exc)))
+
+    def _run_report_generation(
+        self,
+        pdf_source: str,
+        pdf_path: str,
+        lat_column: str,
+        lon_column: str,
+    ) -> None:
+        try:
+            pdf_data = read_spreadsheet(pdf_source)
+            generate_pdf_report(
+                pdf_path,
+                rows=pdf_data.rows,
+                latitude_column=lat_column,
+                longitude_column=lon_column,
+            )
+            payload = {
+                "pdf_path": pdf_path,
+                "output_folder": str(self._ensure_outputs_dir()),
+            }
+            self._queue.put(PipelineMessage(level="pdf_success", message="PDF report generated.", payload=payload))
+        except Exception as exc:
+            self._queue.put(PipelineMessage(level="pdf_error", message=str(exc)))
 
     def _poll_queue(self) -> None:
         try:
@@ -928,6 +1218,10 @@ class CrashRefinerApp:
                     self._handle_success(message)
                 elif message.level == "error":
                     self._handle_error(message)
+                elif message.level == "pdf_success":
+                    self._handle_pdf_success(message)
+                elif message.level == "pdf_error":
+                    self._handle_pdf_error(message)
                 elif message.level == "map":
                     self._handle_reference_map_update(message)
                 elif message.level == "map_error":
@@ -951,17 +1245,58 @@ class CrashRefinerApp:
             count_text = f" ({kmz_count} placemarks)" if kmz_count is not None else ""
             self._append_log(f"KMZ output saved: {kmz_path}{count_text}")
 
+        pdf_path = payload.get("pdf_path")
+        if pdf_path:
+            self._last_pdf_path = Path(pdf_path)
+            self._append_log(f"Full crash report PDF saved: {pdf_path}")
+            self.open_pdf_button.configure(state=tk.NORMAL)
+        else:
+            self._last_pdf_path = None
+            self.open_pdf_button.configure(state=tk.DISABLED)
+
         output_folder = payload.get("output_folder")
         if output_folder:
             self.open_folder_button.configure(state=tk.NORMAL)
 
         self.run_button.configure(state=tk.NORMAL)
+        self.generate_report_button.configure(state=tk.NORMAL)
         self.progress.stop()
 
     def _handle_error(self, message: PipelineMessage) -> None:
         self._append_log(f"Error: {message.message}")
         self.run_button.configure(state=tk.NORMAL)
+        self.generate_report_button.configure(state=tk.NORMAL)
         self.progress.stop()
+        self.open_pdf_button.configure(state=tk.DISABLED)
+        messagebox.showerror("Crash Data Refiner", message.message)
+
+    def _handle_pdf_success(self, message: PipelineMessage) -> None:
+        payload = message.payload or {}
+        self._append_log(message.message)
+
+        pdf_path = payload.get("pdf_path")
+        if pdf_path:
+            self._last_pdf_path = Path(pdf_path)
+            self._append_log(f"Full crash report PDF saved: {pdf_path}")
+            self.open_pdf_button.configure(state=tk.NORMAL)
+        else:
+            self._last_pdf_path = None
+            self.open_pdf_button.configure(state=tk.DISABLED)
+
+        output_folder = payload.get("output_folder")
+        if output_folder:
+            self.open_folder_button.configure(state=tk.NORMAL)
+
+        self.run_button.configure(state=tk.NORMAL)
+        self.generate_report_button.configure(state=tk.NORMAL)
+        self.progress.stop()
+
+    def _handle_pdf_error(self, message: PipelineMessage) -> None:
+        self._append_log(f"Error: {message.message}")
+        self.run_button.configure(state=tk.NORMAL)
+        self.generate_report_button.configure(state=tk.NORMAL)
+        self.progress.stop()
+        self.open_pdf_button.configure(state=tk.DISABLED)
         messagebox.showerror("Crash Data Refiner", message.message)
 
     def _handle_reference_map_update(self, message: PipelineMessage) -> None:
@@ -1075,6 +1410,27 @@ class CrashRefinerApp:
                 except ValueError:
                     folder_uri = str(folder)
                 webbrowser.open(folder_uri)
+
+    def _open_pdf_report(self) -> None:
+        if not self._last_pdf_path:
+            return
+        pdf_path = self._last_pdf_path
+        if not pdf_path.exists():
+            messagebox.showwarning(
+                "Crash Data Refiner",
+                f"PDF report not found: {pdf_path}",
+            )
+            return
+        try:
+            import os
+
+            os.startfile(str(pdf_path))  # type: ignore[attr-defined]
+        except Exception:
+            try:
+                pdf_uri = pdf_path.as_uri()
+            except ValueError:
+                pdf_uri = str(pdf_path)
+            webbrowser.open(pdf_uri)
 
     def run(self) -> None:
         self.root.mainloop()
