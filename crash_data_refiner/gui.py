@@ -186,36 +186,36 @@ class CrashRefinerApp:
             pass
 
         palette = {
-            "base": "#0d1117",
-            "surface": "#0b1220",
-            "surface_alt": "#0f172a",
-            "card": "#111827",
-            "overlay": "#111827",
-            "field": "#0f172a",
-            "field_hover": "#16223b",
-            "field_active": "#1e335a",
-            "border": "#24384b",
-            "outline": "#2c3b50",
-            "accent": "#58a6ff",
-            "accent_active": "#79b8ff",
-            "accent_pressed": "#1f6feb",
-            "accent_dim": "#244a74",
-            "accent_soft": "#0c2d50",
-            "success": "#2ea043",
-            "warning": "#d29922",
-            "error": "#f85149",
-            "text": "#e6edf3",
-            "muted": "#9aa7b2",
-            "muted_alt": "#7d8590",
-            "code_bg": "#161b22",
-            "hero_start": "#0d1117",
-            "hero_end": "#0d1117",
-            "hero_gloss": "#0d1117",
+            "base": "#000000",
+            "surface": "#050505",
+            "surface_alt": "#0a0a0a",
+            "card": "#0f0f0f",
+            "overlay": "#0f0f0f",
+            "field": "#050505",
+            "field_hover": "#0f1d0f",
+            "field_active": "#133113",
+            "border": "#0f3b0f",
+            "outline": "#0f3b0f",
+            "accent": "#00ff41",
+            "accent_active": "#00cc34",
+            "accent_pressed": "#00b12d",
+            "accent_dim": "#0a4f1c",
+            "accent_soft": "#002b0f",
+            "success": "#00ff41",
+            "warning": "#96ff00",
+            "error": "#ff3b3b",
+            "text": "#00ff41",
+            "muted": "#55b56f",
+            "muted_alt": "#3c8a4d",
+            "code_bg": "#010201",
+            "hero_start": "#000000",
+            "hero_end": "#000000",
+            "hero_gloss": "#001503",
         }
         self._palette = palette
 
         self.root.configure(background=palette["base"])
-        default_font = "{Segoe UI} 11"
+        default_font = "{Courier New} 11"
         self.root.option_add("*Font", default_font)
         self.root.option_add("*TButton.Padding", 12)
         self.root.option_add("*TEntry*Font", default_font)
@@ -228,76 +228,84 @@ class CrashRefinerApp:
             pass
 
         style.configure("Background.TFrame", background=palette["base"])
-        style.configure("Card.TFrame", background=palette["card"])
-        style.configure("CardBody.TFrame", background=palette["card"])
-        style.configure("Glass.TFrame", background=palette["surface_alt"], relief=tk.FLAT)
+        style.configure("Card.TFrame", background=palette["card"], borderwidth=1, relief=tk.FLAT)
+        style.configure("CardBody.TFrame", background=palette["card"], borderwidth=1)
+        style.configure("Glass.TFrame", background=palette["surface_alt"], relief=tk.FLAT, borderwidth=1)
         style.configure("Header.TFrame", background=palette["hero_start"])
-        style.configure("TLabel", background=palette["card"], foreground=palette["text"])
+        style.configure(
+            "TLabel",
+            background=palette["card"],
+            foreground=palette["text"],
+            font=("Courier New", 11),
+        )
         style.configure(
             "Heading.TLabel",
             background=palette["card"],
             foreground=palette["text"],
-            font=("Segoe UI Semibold", 18),
+            font=("Courier New", 22, "bold"),
         )
         style.configure(
             "Subheading.TLabel",
             background=palette["surface_alt"],
             foreground=palette["muted"],
-            font=("Segoe UI", 11),
+            font=("Courier New", 11),
         )
         style.configure(
             "Body.TLabel",
             background=palette["surface_alt"],
             foreground=palette["text"],
-            font=("Segoe UI", 11),
+            font=("Courier New", 11),
         )
         style.configure(
             "SectionHeading.TLabel",
             background=palette["card"],
             foreground=palette["text"],
-            font=("Segoe UI Semibold", 14),
+            font=("Courier New", 14, "bold"),
         )
         style.configure(
             "Hint.TLabel",
             background=palette["surface_alt"],
             foreground=palette["muted"],
-            font=("Segoe UI", 9),
+            font=("Courier New", 9),
             wraplength=320,
         )
         style.configure(
             "MetricValue.TLabel",
             background=palette["surface_alt"],
             foreground=palette["text"],
-            font=("Segoe UI Semibold", 22),
+            font=("Courier New", 22, "bold"),
         )
         style.configure(
             "MetricCaption.TLabel",
             background=palette["surface_alt"],
             foreground=palette["muted"],
-            font=("Segoe UI", 10),
+            font=("Courier New", 10),
         )
         style.configure(
             "Primary.TButton",
-            background=palette["accent_pressed"],
+            background=palette["accent_soft"],
             foreground=palette["text"],
-            borderwidth=0,
+            borderwidth=1,
         )
         style.map(
             "Primary.TButton",
             background=[
-                ("active", palette["accent"]),
+                ("active", palette["accent_active"]),
                 ("pressed", palette["accent_pressed"]),
                 ("disabled", palette["accent_dim"]),
             ],
+            foreground=[("disabled", palette["muted_alt"])],
         )
         style.configure(
             "Secondary.TButton",
-            background=palette["surface_alt"],
+            background=palette["field"],
             foreground=palette["text"],
+            borderwidth=1,
         )
         style.map(
             "Secondary.TButton",
             background=[("active", palette["field_hover"]), ("pressed", palette["field_active"])],
+            foreground=[("disabled", palette["muted_alt"])],
         )
         style.configure(
             "TEntry",
@@ -331,6 +339,7 @@ class CrashRefinerApp:
             "TCheckbutton",
             background=palette["surface_alt"],
             foreground=palette["text"],
+            indicatorcolor=palette["accent"],
         )
         style.map(
             "TCheckbutton",
@@ -354,7 +363,7 @@ class CrashRefinerApp:
             text="Crash Data Refiner",
             bg=self._palette["hero_start"],
             fg=self._palette["text"],
-            font=("Segoe UI Semibold", 24),
+            font=("Courier New", 24, "bold"),
         )
         header.create_window(32, 30, anchor="nw", window=header_title)
         header_subtitle = tk.Label(
@@ -362,7 +371,7 @@ class CrashRefinerApp:
             text="Filter Raw Crash Data and Generate KMZ, Map, and PDF Reports",
             bg=self._palette["hero_start"],
             fg=self._palette["muted"],
-            font=("Segoe UI", 12),
+            font=("Courier New", 12),
         )
         header.create_window(34, 68, anchor="nw", window=header_subtitle)
 

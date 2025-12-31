@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Crash Data Refiner</title>
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <div class="ambient"></div>
+    <div class="grid"></div>
+    <div class="scanline"></div>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="sidebar-inner">
+          <div class="section" style="--delay: 0.05s">
+            <div class="section-title">Project Inputs</div>
+
+            <label class="field-label">Crash Data File</label>
+            <div class="drop-zone" id="data-drop">
+              <div class="drop-icon">
+                <svg viewBox="0 0 64 48" aria-hidden="true">
+                  <path d="M8 8h22l8 8h18a6 6 0 0 1 6 6v14a6 6 0 0 1-6 6H8a6 6 0 0 1-6-6V14a6 6 0 0 1 6-6z" />
+                </svg>
+              </div>
+              <div class="drop-title" id="data-label">Drop crash data (CSV or Excel)</div>
+              <div class="drop-subtitle" id="data-hint">Drag a file here or click to browse.</div>
+              <input id="data-input" type="file" accept=".csv,.xlsx,.xlsm" />
+            </div>
+
+            <label class="field-label">Relevance Boundary (KMZ)</label>
+            <div class="drop-zone compact" id="kmz-drop">
+              <div class="drop-icon">
+                <svg viewBox="0 0 64 48" aria-hidden="true">
+                  <path d="M10 6h26l8 8h10a4 4 0 0 1 4 4v20a6 6 0 0 1-6 6H10a6 6 0 0 1-6-6V12a6 6 0 0 1 6-6z" />
+                </svg>
+              </div>
+              <div class="drop-title" id="kmz-label">Drop KMZ polygon boundary</div>
+              <div class="drop-subtitle" id="kmz-hint">Must contain exactly one polygon.</div>
+              <input id="kmz-input" type="file" accept=".kmz" />
+            </div>
+          </div>
+
+          <div class="section" style="--delay: 0.1s">
+            <div class="section-title">Coordinate Columns</div>
+            <label class="field-label" for="lat-column">Latitude Column</label>
+            <input
+              id="lat-column"
+              class="field input"
+              list="column-options"
+              placeholder="Select or type latitude column"
+            />
+
+            <label class="field-label" for="lon-column">Longitude Column</label>
+            <input
+              id="lon-column"
+              class="field input"
+              list="column-options"
+              placeholder="Select or type longitude column"
+            />
+            <datalist id="column-options"></datalist>
+            <div class="hint" id="column-hint">Upload crash data to populate column options.</div>
+          </div>
+
+          <div class="section" style="--delay: 0.15s">
+            <div class="section-title">Report Outputs</div>
+            <label class="toggle">
+              <input id="generate-pdf" type="checkbox" checked />
+              <span class="toggle-ui"></span>
+              Generate full PDF crash report
+            </label>
+
+            <label class="field-label">PDF Report Data (optional)</label>
+            <div class="drop-zone compact" id="pdf-drop">
+              <div class="drop-icon">
+                <svg viewBox="0 0 64 48" aria-hidden="true">
+                  <path d="M8 10a6 6 0 0 1 6-6h20l6 6h16a6 6 0 0 1 6 6v18a6 6 0 0 1-6 6H8a6 6 0 0 1-6-6V10z" />
+                </svg>
+              </div>
+              <div class="drop-title" id="pdf-label">Drop alternate PDF data file</div>
+              <div class="drop-subtitle" id="pdf-hint">Leave blank to use refined data.</div>
+              <input id="pdf-input" type="file" accept=".csv,.xlsx,.xlsm" />
+            </div>
+          </div>
+
+          <div class="section" style="--delay: 0.2s">
+            <div class="section-title">Progress</div>
+            <div class="progress">
+              <div class="progress-bar" id="progress-bar"></div>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="hero">
+          <div class="hero-content">
+            <h1>Crash Data Refiner</h1>
+            <p>Filter raw crash exports, map boundaries, and publish polished reports.</p>
+          </div>
+          <button class="btn ghost" id="open-guide">Workflow Guide</button>
+        </header>
+
+        <section class="status-bar" id="status-bar" data-state="idle">
+          <div class="status-indicator" id="status-indicator"></div>
+          <div class="status-text">
+            <div class="status-title" id="status-title">Ready to run</div>
+            <div class="status-detail" id="status-detail">
+              Add crash data and a KMZ polygon to begin refinement.
+            </div>
+          </div>
+          <div class="status-hint">All run activity streams into the log.</div>
+        </section>
+
+        <section class="content">
+          <div class="left-col">
+            <div class="card" style="--delay: 0.25s">
+              <div class="card-title">Run Refinement</div>
+              <div class="summary-grid">
+                <div class="summary-label">Crash data</div>
+                <div class="summary-value" id="summary-data">No file selected.</div>
+                <div class="summary-label">KMZ boundary</div>
+                <div class="summary-value" id="summary-kmz">No boundary selected.</div>
+                <div class="summary-label">Columns</div>
+                <div class="summary-value" id="summary-columns">Latitude / Longitude not set.</div>
+                <div class="summary-label">PDF source</div>
+                <div class="summary-value" id="summary-pdf">Refined output (default).</div>
+              </div>
+              <div class="actions">
+                <button class="btn primary" id="run-refine" disabled>Run Refinement</button>
+                <button class="btn secondary" id="clear-session">Clear Session</button>
+              </div>
+            </div>
+
+            <div class="card" style="--delay: 0.3s">
+              <div class="card-title">Map Report Preview</div>
+              <div class="map-frame">
+                <iframe title="Map report preview" id="map-frame"></iframe>
+                <div class="map-placeholder" id="map-placeholder">
+                  Map report preview appears after a successful run.
+                </div>
+              </div>
+              <div class="actions inline">
+                <button class="btn secondary small" id="open-map" disabled>Open Map Report</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="right-col">
+            <div class="card log-card" style="--delay: 0.35s">
+              <div class="card-header">
+                <div>
+                  <div class="card-title">Run Log</div>
+                  <div class="card-subtitle">Pipeline activity, warnings, and results.</div>
+                </div>
+                <button class="btn secondary small" id="pop-log">Pop out</button>
+              </div>
+              <div class="log-window" id="run-log"></div>
+            </div>
+
+            <div class="card snapshot-card" style="--delay: 0.4s">
+              <div class="card-title">Run Snapshot</div>
+              <div class="snapshot-pill" id="snapshot-tag">Idle</div>
+              <div class="snapshot-grid">
+                <div class="snapshot-label">Status</div>
+                <div class="snapshot-value" id="snapshot-status">Waiting for inputs.</div>
+                <div class="snapshot-label">Last run</div>
+                <div class="snapshot-value" id="snapshot-last-run">No runs yet.</div>
+              </div>
+              <div class="metrics" id="metrics"></div>
+              <div class="outputs">
+                <div class="outputs-title">Outputs</div>
+                <div class="output-links" id="output-links">No outputs yet.</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <footer class="footer">
+          <button class="link" id="open-notes">Output Notes</button>
+          <div class="footer-note">Outputs are stored under outputs/web_runs.</div>
+        </footer>
+      </main>
+    </div>
+
+    <dialog class="modal" id="guide-modal">
+      <div class="modal-header">
+        <h2>Crash Data Refinement Workflow</h2>
+        <button class="btn secondary small" data-close>Close</button>
+      </div>
+      <div class="modal-body">
+        <h3>Quick start checklist</h3>
+        <ol>
+          <li>Drop the crash data CSV or Excel file into Project Inputs.</li>
+          <li>Drop the KMZ boundary (single polygon required).</li>
+          <li>Confirm latitude and longitude columns are correct.</li>
+          <li>Toggle PDF generation if needed and add an alternate report file.</li>
+          <li>Run refinement and track progress in the Run Log.</li>
+        </ol>
+        <h3>Outputs produced</h3>
+        <ul>
+          <li>Refined crash data file inside the KMZ boundary.</li>
+          <li>Crashes Without Valid Lat-Long Data extract.</li>
+          <li>KMZ crash report for Google Earth previews.</li>
+          <li>Map report HTML and optional full PDF report.</li>
+        </ul>
+      </div>
+    </dialog>
+
+    <dialog class="modal" id="notes-modal">
+      <div class="modal-header">
+        <h2>Output Notes</h2>
+        <button class="btn secondary small" data-close>Close</button>
+      </div>
+      <div class="modal-body">
+        <p>Each run writes outputs into a dedicated folder under outputs/web_runs.</p>
+        <p>The map report uses Leaflet tiles and needs network access to load the basemap.</p>
+        <p>PDF reports are generated from refined data unless a separate PDF data file is supplied.</p>
+      </div>
+    </dialog>
+
+    <div class="toast" id="toast"></div>
+    <script src="app.js"></script>
+  </body>
+</html>

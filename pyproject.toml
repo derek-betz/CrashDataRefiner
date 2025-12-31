@@ -10,6 +10,7 @@ authors = [{name = "CrashDataRefiner"}]
 requires-python = ">=3.10"
 readme = "docs/README.md"
 dependencies = [
+    "flask>=2.3.0,<3.0.0",
     "openpyxl>=3.1",
     "tkintermapview",
     "Pillow>=10.4",
@@ -25,3 +26,7 @@ dev = [
 [project.scripts]
 crash-data-refiner = "crash_data_refiner.cli:main"
 crash-data-refiner-gui = "crash_data_refiner.gui:main"
+crash-data-refiner-web = "crash_data_refiner.webapp:main"
+
+[tool.setuptools.package-data]
+crash_data_refiner = ["web/**"]
