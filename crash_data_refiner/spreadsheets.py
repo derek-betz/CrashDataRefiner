@@ -93,6 +93,8 @@ def _read_xlsx(path: str) -> SpreadsheetData:
 
 
 def _write_xlsx(path: str, rows: Sequence[Mapping[str, Any]], headers: Sequence[str] | None = None) -> None:
+    from openpyxl.utils import get_column_letter
+    from openpyxl.worksheet.table import Table, TableStyleInfo
     from openpyxl import Workbook
 
     header_list = _resolve_headers(rows, headers)
@@ -101,7 +103,40 @@ def _write_xlsx(path: str, rows: Sequence[Mapping[str, Any]], headers: Sequence[
     sheet.append(list(header_list))
     for row in rows:
         sheet.append([row.get(header) for header in header_list])
+
+    if header_list:
+        max_row = sheet.max_row
+        max_col = len(header_list)
+        end_cell = f"{get_column_letter(max_col)}{max_row}"
+        table = Table(displayName="Table1", ref=f"A1:{end_cell}")
+        table_style = TableStyleInfo(
+            name="TableStyleMedium2",
+            showFirstColumn=False,
+            showLastColumn=False,
+            showRowStripes=True,
+            showColumnStripes=False,
+        )
+        table.tableStyleInfo = table_style
+        sheet.add_table(table)
+        _autosize_columns(sheet, max_col)
+
     workbook.save(path)
+
+
+def _autosize_columns(sheet: Any, max_col: int) -> None:
+    from openpyxl.utils import get_column_letter
+
+    for col_idx in range(1, max_col + 1):
+        max_length = 0
+        for cell in sheet.iter_rows(min_row=1, max_row=sheet.max_row, min_col=col_idx, max_col=col_idx):
+            value = cell[0].value
+            if value is None:
+                continue
+            text = str(value)
+            if len(text) > max_length:
+                max_length = len(text)
+        width = min(max(max_length + 2, 10), 60)
+        sheet.column_dimensions[get_column_letter(col_idx)].width = width
 
 
 def _resolve_headers(rows: Sequence[Mapping[str, Any]], headers: Sequence[str] | None) -> List[str]:
@@ -110,4 +145,8 @@ def _resolve_headers(rows: Sequence[Mapping[str, Any]], headers: Sequence[str] |
     header_set = set()
     for row in rows:
         header_set.update(row.keys())
-    return sorted(header_set)
+    header_list = sorted(header_set)
+    if "kmz_label" in header_list:
+        header_list.remove("kmz_label")
+        header_list.insert(0, "kmz_label")
+    return header_list

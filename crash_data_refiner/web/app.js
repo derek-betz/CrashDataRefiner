@@ -8,6 +8,8 @@ const state = {
   pollTimer: null,
   logWindow: null,
   mapReportName: null,
+  previewTimer: null,
+  previewRequestId: 0,
 };
 
 const el = {
@@ -25,9 +27,11 @@ const el = {
   pdfHint: document.getElementById("pdf-hint"),
   latColumn: document.getElementById("lat-column"),
   lonColumn: document.getElementById("lon-column"),
+  labelOrder: document.getElementById("label-order"),
   columnOptions: document.getElementById("column-options"),
   columnHint: document.getElementById("column-hint"),
-  generatePdf: document.getElementById("generate-pdf"),
+  generateReport: document.getElementById("generate-report"),
+  reportProgress: document.getElementById("report-progress"),
   progressBar: document.getElementById("progress-bar"),
   statusBar: document.getElementById("status-bar"),
   statusTitle: document.getElementById("status-title"),
@@ -37,7 +41,6 @@ const el = {
   summaryData: document.getElementById("summary-data"),
   summaryKmz: document.getElementById("summary-kmz"),
   summaryColumns: document.getElementById("summary-columns"),
-  summaryPdf: document.getElementById("summary-pdf"),
   runLog: document.getElementById("run-log"),
   popLog: document.getElementById("pop-log"),
   snapshotTag: document.getElementById("snapshot-tag"),
@@ -71,12 +74,23 @@ function setProgressRunning(isRunning) {
   el.progressBar.parentElement.classList.toggle("running", isRunning);
 }
 
+function setReportProgressRunning(isRunning) {
+  if (!el.reportProgress) return;
+  el.reportProgress.classList.toggle("running", isRunning);
+}
+
 function updateRunButton() {
   const hasData = !!state.dataFile;
   const hasKmz = !!state.kmzFile;
   const lat = el.latColumn.value.trim();
   const lon = el.lonColumn.value.trim();
   el.runRefine.disabled = !(hasData && hasKmz && lat && lon);
+  updateReportButton();
+}
+
+function updateReportButton() {
+  const hasSource = !!state.pdfDataFile || !!state.runId || !!state.dataFile;
+  el.generateReport.disabled = !hasSource;
 }
 
 function updateSummary() {
@@ -85,13 +99,6 @@ function updateSummary() {
   const lat = el.latColumn.value.trim();
   const lon = el.lonColumn.value.trim();
   el.summaryColumns.textContent = lat && lon ? `${lat} / ${lon}` : "Latitude / Longitude not set.";
-  if (!el.generatePdf.checked) {
-    el.summaryPdf.textContent = "PDF report disabled.";
-  } else if (state.pdfDataFile) {
-    el.summaryPdf.textContent = state.pdfDataFile.name;
-  } else {
-    el.summaryPdf.textContent = "Refined output (default).";
-  }
 }
 
 function updateColumnOptions(headers) {
@@ -129,6 +136,7 @@ async function fetchHeaders(file) {
   }
   updateSummary();
   updateRunButton();
+  schedulePreviewMap();
 }
 
 function appendLog(entries) {
@@ -184,19 +192,63 @@ function renderOutputs(outputs) {
   });
 }
 
-function setMapPreview(mapName) {
+function setMapPreview(mapName, mapUrl) {
   state.mapReportName = mapName;
-  if (!mapName) {
+  const url = mapUrl || (mapName ? `/api/run/${state.runId}/view/${encodeURIComponent(mapName)}` : null);
+  if (!url) {
     el.mapFrame.removeAttribute("src");
     el.mapPlaceholder.style.display = "flex";
     el.openMap.disabled = true;
     return;
   }
-  const url = `/api/run/${state.runId}/view/${encodeURIComponent(mapName)}`;
   el.mapFrame.src = url;
   el.mapPlaceholder.style.display = "none";
   el.openMap.disabled = false;
   el.openMap.dataset.url = url;
+}
+
+function schedulePreviewMap() {
+  if (!state.dataFile || !state.kmzFile || state.pollTimer) return;
+  if (state.previewTimer) {
+    window.clearTimeout(state.previewTimer);
+  }
+  state.previewTimer = window.setTimeout(requestPreviewMap, 300);
+}
+
+async function requestPreviewMap() {
+  if (!state.dataFile || !state.kmzFile || state.pollTimer) return;
+  const requestId = ++state.previewRequestId;
+  el.mapPlaceholder.textContent = "Loading map preview...";
+  el.mapPlaceholder.style.display = "flex";
+  el.openMap.disabled = true;
+
+  const form = new FormData();
+  form.append("data_file", state.dataFile);
+  form.append("boundary_file", state.kmzFile);
+  form.append("lat_column", el.latColumn.value.trim());
+  form.append("lon_column", el.lonColumn.value.trim());
+
+  const response = await fetch("/api/preview-map", { method: "POST", body: form });
+  if (requestId !== state.previewRequestId) return;
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    el.mapPlaceholder.textContent = data.error || "Map preview unavailable.";
+    el.mapPlaceholder.style.display = "flex";
+    setMapPreview(null);
+    return;
+  }
+  const data = await response.json().catch(() => ({}));
+  if (data.latGuess && !el.latColumn.value.trim()) {
+    el.latColumn.value = data.latGuess;
+  }
+  if (data.lonGuess && !el.lonColumn.value.trim()) {
+    el.lonColumn.value = data.lonGuess;
+  }
+  if (data.previewUrl) {
+    setMapPreview(null, data.previewUrl);
+  }
+  updateSummary();
+  updateRunButton();
 }
 
 function buildRunFormData() {
@@ -205,9 +257,20 @@ function buildRunFormData() {
   form.append("boundary_file", state.kmzFile);
   form.append("lat_column", el.latColumn.value.trim());
   form.append("lon_column", el.lonColumn.value.trim());
-  form.append("generate_pdf", el.generatePdf.checked ? "true" : "false");
+  form.append("label_order", el.labelOrder.value);
+  return form;
+}
+
+function buildReportFormData() {
+  const form = new FormData();
+  form.append("lat_column", el.latColumn.value.trim());
+  form.append("lon_column", el.lonColumn.value.trim());
   if (state.pdfDataFile) {
     form.append("pdf_data_file", state.pdfDataFile);
+  } else if (state.runId) {
+    form.append("source_run_id", state.runId);
+  } else if (state.dataFile) {
+    form.append("data_file", state.dataFile);
   }
   return form;
 }
@@ -217,11 +280,12 @@ async function startRun() {
   clearLogs();
   setStatus("running", "Refinement running", "Crash data pipeline is processing.");
   setProgressRunning(true);
+  setReportProgressRunning(false);
   el.runRefine.disabled = true;
+  el.generateReport.disabled = true;
   el.snapshotTag.textContent = "Running";
   el.snapshotStatus.textContent = "Processing crash data.";
   el.outputLinks.textContent = "Run in progress...";
-  setMapPreview(null);
 
   const response = await fetch("/api/run", {
     method: "POST",
@@ -232,6 +296,41 @@ async function startRun() {
     showToast(data.error || "Unable to start refinement.");
     setStatus("error", "Run failed to start", "Check inputs and try again.");
     setProgressRunning(false);
+    updateRunButton();
+    return;
+  }
+  state.runId = data.runId;
+  state.logSeq = 0;
+  pollLogs();
+  state.pollTimer = window.setInterval(pollLogs, 1200);
+}
+
+async function startReport() {
+  if (!state.pdfDataFile && !state.runId && !state.dataFile) {
+    showToast("Select a crash data or PDF report file first.");
+    return;
+  }
+  clearLogs();
+  setStatus("running", "Report running", "Generating PDF crash report.");
+  setProgressRunning(true);
+  setReportProgressRunning(true);
+  el.runRefine.disabled = true;
+  el.generateReport.disabled = true;
+  el.snapshotTag.textContent = "Running";
+  el.snapshotStatus.textContent = "Generating PDF report.";
+  el.outputLinks.textContent = "Report in progress...";
+  setMapPreview(null);
+
+  const response = await fetch("/api/report", {
+    method: "POST",
+    body: buildReportFormData(),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    showToast(data.error || "Unable to start report.");
+    setStatus("error", "Report failed to start", "Check inputs and try again.");
+    setProgressRunning(false);
+    setReportProgressRunning(false);
     updateRunButton();
     return;
   }
@@ -284,6 +383,7 @@ async function finalizeRun(status) {
     el.snapshotLastRun.textContent = `Completed ${new Date(finishedAt).toLocaleString()}`;
   }
   setProgressRunning(false);
+  setReportProgressRunning(false);
   updateRunButton();
 }
 
@@ -338,16 +438,6 @@ function setupDropZone(zone, input, handler) {
   });
 }
 
-function handleGeneratePdfToggle() {
-  const enabled = el.generatePdf.checked;
-  el.pdfInput.disabled = !enabled;
-  el.pdfDrop.style.opacity = enabled ? "1" : "0.5";
-  el.pdfHint.textContent = enabled
-    ? "Leave blank to use refined data."
-    : "PDF generation is disabled.";
-  updateSummary();
-}
-
 function validateDataFile(file) {
   const name = file.name.toLowerCase();
   return name.endsWith(".csv") || name.endsWith(".xlsx") || name.endsWith(".xlsm");
@@ -361,18 +451,25 @@ function bindInputs() {
   el.latColumn.addEventListener("input", () => {
     updateSummary();
     updateRunButton();
+    schedulePreviewMap();
   });
   el.lonColumn.addEventListener("input", () => {
     updateSummary();
     updateRunButton();
+    schedulePreviewMap();
   });
-  el.generatePdf.addEventListener("change", handleGeneratePdfToggle);
   el.runRefine.addEventListener("click", startRun);
+  el.generateReport.addEventListener("click", startReport);
   el.clearSession.addEventListener("click", () => {
     if (state.pollTimer) {
       window.clearInterval(state.pollTimer);
       state.pollTimer = null;
     }
+    if (state.previewTimer) {
+      window.clearTimeout(state.previewTimer);
+      state.previewTimer = null;
+    }
+    state.previewRequestId = 0;
     state.runId = null;
     state.logSeq = 0;
     clearLogs();
@@ -384,14 +481,13 @@ function bindInputs() {
     el.pdfInput.value = "";
     el.latColumn.value = "";
     el.lonColumn.value = "";
+    el.labelOrder.selectedIndex = 0;
     el.dataLabel.textContent = "Drop crash data (CSV or Excel)";
     el.dataHint.textContent = "Drag a file here or click to browse.";
     el.kmzLabel.textContent = "Drop KMZ polygon boundary";
     el.kmzHint.textContent = "Must contain exactly one polygon.";
     el.pdfLabel.textContent = "Drop alternate PDF data file";
-    el.pdfHint.textContent = el.generatePdf.checked
-      ? "Leave blank to use refined data."
-      : "PDF generation is disabled.";
+    el.pdfHint.textContent = "Leave blank to use refined output when available.";
     updateColumnOptions([]);
     setStatus("idle", "Ready to run", "Add crash data and a KMZ polygon to begin refinement.");
     setProgressRunning(false);
@@ -400,7 +496,9 @@ function bindInputs() {
     el.snapshotLastRun.textContent = "No runs yet.";
     el.outputLinks.textContent = "No outputs yet.";
     el.metrics.innerHTML = "";
+    el.mapPlaceholder.textContent = "Map report preview appears after crash data and boundary files are loaded.";
     setMapPreview(null);
+    setReportProgressRunning(false);
     updateSummary();
     updateRunButton();
   });
@@ -423,7 +521,6 @@ function wireModals() {
 }
 
 function init() {
-  handleGeneratePdfToggle();
   wireModals();
   bindInputs();
   setupDropZone(el.dataDrop, el.dataInput, (file) => {
@@ -439,6 +536,7 @@ function init() {
     fetchHeaders(file);
     updateSummary();
     updateRunButton();
+    schedulePreviewMap();
   });
   setupDropZone(el.kmzDrop, el.kmzInput, (file) => {
     if (!validateKmzFile(file)) {
@@ -450,6 +548,7 @@ function init() {
     el.kmzHint.textContent = "Boundary loaded. Ready to run.";
     updateSummary();
     updateRunButton();
+    schedulePreviewMap();
   });
   setupDropZone(el.pdfDrop, el.pdfInput, (file) => {
     if (!validateDataFile(file)) {
@@ -460,11 +559,13 @@ function init() {
     el.pdfLabel.textContent = file.name;
     el.pdfHint.textContent = "PDF will use this dataset.";
     updateSummary();
+    updateRunButton();
   });
   window.addEventListener("dragover", (event) => event.preventDefault());
   window.addEventListener("drop", (event) => event.preventDefault());
   updateSummary();
   updateRunButton();
+  setReportProgressRunning(false);
 }
 
 init();

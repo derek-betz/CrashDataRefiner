@@ -444,11 +444,15 @@ class CrashRefinerApp:
         self.output_path_var = tk.StringVar()
         self.lat_column_var = tk.StringVar()
         self.lon_column_var = tk.StringVar()
+        self.label_order_var = tk.StringVar(value="Left to right (west to east)")
         self.invalid_path_var = tk.StringVar()
-        self.generate_pdf_var = tk.BooleanVar(value=True)
         self.pdf_path_hint_var = tk.StringVar()
         self.pdf_data_path_var = tk.StringVar()
         self.pdf_data_hint_var = tk.StringVar()
+        self.label_order_options = {
+            "Left to right (west to east)": "west_to_east",
+            "Bottom to top (south to north)": "south_to_north",
+        }
 
         current_row = 1
         current_row = self._add_file_picker(
@@ -500,6 +504,19 @@ class CrashRefinerApp:
         )
         current_row += 1
 
+        ttk.Label(card, text="KMZ Label Order", style="Body.TLabel").grid(
+            row=current_row, column=0, sticky="w"
+        )
+        current_row += 1
+        self.label_order_combo = ttk.Combobox(
+            card,
+            textvariable=self.label_order_var,
+            state="readonly",
+            values=list(self.label_order_options.keys()),
+        )
+        self.label_order_combo.grid(row=current_row, column=0, sticky="ew", pady=(4, 8))
+        current_row += 1
+
         current_row = self._add_file_picker(
             card,
             label="Refined Output File",
@@ -526,13 +543,11 @@ class CrashRefinerApp:
         output_frame.grid(row=current_row, column=0, sticky="ew", pady=(0, 12))
         output_frame.columnconfigure(0, weight=1)
 
-        pdf_check = ttk.Checkbutton(
+        ttk.Label(
             output_frame,
-            text="Generate full crash report PDF",
-            variable=self.generate_pdf_var,
-            command=self._update_invalid_path_label,
-        )
-        pdf_check.grid(row=0, column=0, sticky="w")
+            text="Generate PDF Crash Report",
+            style="Body.TLabel",
+        ).grid(row=0, column=0, sticky="w")
         ttk.Label(
             output_frame,
             text="One page per crash with aerial imagery and bulleted details.",
@@ -565,19 +580,19 @@ class CrashRefinerApp:
             textvariable=self.pdf_data_hint_var,
             style="Hint.TLabel",
         ).grid(row=output_row, column=0, sticky="w", pady=(2, 0))
+        output_row += 1
         current_row += 1
 
-        report_row = ttk.Frame(card, style="Card.TFrame")
-        report_row.grid(row=current_row, column=0, sticky="ew", pady=(0, 6))
-        report_row.columnconfigure(0, weight=1)
         self.generate_report_button = ttk.Button(
-            report_row,
-            text="Generate Report",
+            output_frame,
+            text="Generate PDF Crash Report",
             style="Secondary.TButton",
             command=self._on_generate_report,
         )
-        self.generate_report_button.grid(row=0, column=0, sticky="ew")
-        current_row += 1
+        self.generate_report_button.grid(row=output_row, column=0, sticky="ew", pady=(8, 0))
+        output_row += 1
+        self.report_progress = ttk.Progressbar(output_frame, mode="indeterminate")
+        self.report_progress.grid(row=output_row, column=0, sticky="ew", pady=(6, 0))
 
         button_row = ttk.Frame(card, style="Card.TFrame")
         button_row.grid(row=current_row, column=0, sticky="ew")
@@ -805,19 +820,15 @@ class CrashRefinerApp:
             self.invalid_path_var.set(f"Outputs will be saved to {outputs_dir}.")
 
         pdf_data_path = self.pdf_data_path_var.get().strip()
-        if self.generate_pdf_var.get():
-            if resolved is not None:
-                pdf_path = self._pdf_output_path(resolved)
-                self.pdf_path_hint_var.set(f"PDF report: {pdf_path.name}")
-            else:
-                self.pdf_path_hint_var.set("PDF report will be saved to the outputs folder.")
-            if pdf_data_path:
-                self.pdf_data_hint_var.set(f"PDF data source: {Path(pdf_data_path).name}")
-            else:
-                self.pdf_data_hint_var.set("PDF data source: refined output file")
+        if resolved is not None:
+            pdf_path = self._pdf_output_path(resolved)
+            self.pdf_path_hint_var.set(f"PDF report: {pdf_path.name}")
         else:
-            self.pdf_path_hint_var.set("PDF report generation is disabled.")
-            self.pdf_data_hint_var.set("PDF data source: disabled")
+            self.pdf_path_hint_var.set("PDF report will be saved to the outputs folder.")
+        if pdf_data_path:
+            self.pdf_data_hint_var.set(f"PDF data source: {Path(pdf_data_path).name}")
+        else:
+            self.pdf_data_hint_var.set("PDF data source: refined output file")
 
     def _ensure_outputs_dir(self) -> Path:
         self._outputs_dir.mkdir(parents=True, exist_ok=True)
@@ -979,6 +990,53 @@ class CrashRefinerApp:
             return 50
         return 0
 
+    def _get_label_order(self) -> str:
+        selection = self.label_order_var.get().strip()
+        return self.label_order_options.get(selection, "west_to_east")
+
+    def _order_and_number_rows(
+        self,
+        rows: List[Dict[str, Any]],
+        *,
+        lat_column: str,
+        lon_column: str,
+        label_order: str,
+    ) -> List[Dict[str, Any]]:
+        lat_key = _normalize_header(lat_column)
+        lon_key = _normalize_header(lon_column)
+
+        indexed: List[Tuple[Tuple[float, float, int] | Tuple[int], Dict[str, Any]]] = []
+        for idx, row in enumerate(rows):
+            lat = parse_coordinate(row.get(lat_key))
+            lon = parse_coordinate(row.get(lon_key))
+            if label_order == "south_to_north":
+                lat_value = lat if lat is not None else float("inf")
+                lon_value = lon if lon is not None else float("inf")
+                key = (lat_value, lon_value, idx)
+            elif label_order == "west_to_east":
+                lon_value = lon if lon is not None else float("inf")
+                lat_value = lat if lat is not None else float("inf")
+                key = (lon_value, lat_value, idx)
+            else:
+                key = (idx,)
+            indexed.append((key, row))
+
+        indexed.sort(key=lambda item: item[0])
+        ordered = [item[1] for item in indexed]
+        for number, row in enumerate(ordered, start=1):
+            row["kmz_label"] = number
+        return ordered
+
+    def _build_output_headers(self, rows: List[Dict[str, Any]]) -> List[str]:
+        header_set: set[str] = set()
+        for row in rows:
+            header_set.update(row.keys())
+        headers = sorted(header_set)
+        if "kmz_label" in headers:
+            headers.remove("kmz_label")
+            headers.insert(0, "kmz_label")
+        return headers
+
     def _suggest_output_path(self, input_path: str) -> None:
         input_file = Path(input_path)
         suffix = input_file.suffix or ".csv"
@@ -1009,8 +1067,7 @@ class CrashRefinerApp:
         output_path = self.output_path_var.get().strip()
         lat_column = self.lat_column_var.get().strip()
         lon_column = self.lon_column_var.get().strip()
-        generate_pdf = self.generate_pdf_var.get()
-        pdf_data_path = self.pdf_data_path_var.get().strip()
+        label_order = self._get_label_order()
 
         if not data_path:
             messagebox.showwarning("Crash Data Refiner", "Select a crash data file to continue.")
@@ -1024,13 +1081,6 @@ class CrashRefinerApp:
         if not lat_column or not lon_column:
             messagebox.showwarning("Crash Data Refiner", "Select latitude and longitude columns.")
             return
-        if generate_pdf and pdf_data_path and not Path(pdf_data_path).is_file():
-            messagebox.showwarning(
-                "Crash Data Refiner",
-                "Select a valid PDF report data file or leave it blank.",
-            )
-            return
-
         resolved_output = self._resolve_output_path(output_path)
         if str(resolved_output) != output_path:
             self.output_path_var.set(str(resolved_output))
@@ -1042,6 +1092,7 @@ class CrashRefinerApp:
         self.open_folder_button.configure(state=tk.DISABLED)
         self.open_pdf_button.configure(state=tk.DISABLED)
         self.progress.start(10)
+        self.report_progress.stop()
         self._last_pdf_path = None
 
         worker = threading.Thread(
@@ -1052,8 +1103,7 @@ class CrashRefinerApp:
                 output_path,
                 lat_column,
                 lon_column,
-                generate_pdf,
-                pdf_data_path,
+                label_order,
             ),
             daemon=True,
         )
@@ -1102,7 +1152,7 @@ class CrashRefinerApp:
         self.run_button.configure(state=tk.DISABLED)
         self.generate_report_button.configure(state=tk.DISABLED)
         self.open_pdf_button.configure(state=tk.DISABLED)
-        self.progress.start(10)
+        self.report_progress.start(10)
         self._last_pdf_path = None
 
         worker = threading.Thread(
@@ -1119,8 +1169,7 @@ class CrashRefinerApp:
         output_path: str,
         lat_column: str,
         lon_column: str,
-        generate_pdf: bool,
-        pdf_data_path: str,
+        label_order: str,
     ) -> None:
         try:
             boundary = load_kmz_polygon(kmz_path)
@@ -1133,9 +1182,16 @@ class CrashRefinerApp:
                 latitude_column=lat_column,
                 longitude_column=lon_column,
             )
+            refined_rows = self._order_and_number_rows(
+                refined_rows,
+                lat_column=lat_column,
+                lon_column=lon_column,
+                label_order=label_order,
+            )
 
             output_file = self._resolve_output_path(output_path)
-            write_spreadsheet(str(output_file), refined_rows)
+            output_headers = self._build_output_headers(refined_rows)
+            write_spreadsheet(str(output_file), refined_rows, headers=output_headers)
 
             invalid_path = self._invalid_output_path(output_file)
             write_spreadsheet(str(invalid_path), invalid_rows)
@@ -1165,22 +1221,8 @@ class CrashRefinerApp:
                 rows=refined_rows,
                 latitude_column=lat_column,
                 longitude_column=lon_column,
+                label_order=label_order,
             )
-
-            pdf_path = None
-            if generate_pdf:
-                pdf_path = self._pdf_output_path(output_file)
-                if pdf_data_path:
-                    pdf_data = read_spreadsheet(pdf_data_path)
-                    pdf_rows = pdf_data.rows
-                else:
-                    pdf_rows = refined_rows
-                generate_pdf_report(
-                    str(pdf_path),
-                    rows=pdf_rows,
-                    latitude_column=lat_column,
-                    longitude_column=lon_column,
-                )
 
             payload = {
                 "included": boundary_report.included_rows,
@@ -1190,8 +1232,6 @@ class CrashRefinerApp:
                 "kmz_count": kmz_count,
                 "output_folder": str(self._ensure_outputs_dir()),
             }
-            if pdf_path:
-                payload["pdf_path"] = str(pdf_path)
             self._queue.put(PipelineMessage(level="success", message="Refinement complete.", payload=payload))
         except Exception as exc:
             self._queue.put(PipelineMessage(level="error", message=str(exc)))
@@ -1270,12 +1310,14 @@ class CrashRefinerApp:
         self.run_button.configure(state=tk.NORMAL)
         self.generate_report_button.configure(state=tk.NORMAL)
         self.progress.stop()
+        self.report_progress.stop()
 
     def _handle_error(self, message: PipelineMessage) -> None:
         self._append_log(f"Error: {message.message}")
         self.run_button.configure(state=tk.NORMAL)
         self.generate_report_button.configure(state=tk.NORMAL)
         self.progress.stop()
+        self.report_progress.stop()
         self.open_pdf_button.configure(state=tk.DISABLED)
         messagebox.showerror("Crash Data Refiner", message.message)
 
@@ -1299,12 +1341,14 @@ class CrashRefinerApp:
         self.run_button.configure(state=tk.NORMAL)
         self.generate_report_button.configure(state=tk.NORMAL)
         self.progress.stop()
+        self.report_progress.stop()
 
     def _handle_pdf_error(self, message: PipelineMessage) -> None:
         self._append_log(f"Error: {message.message}")
         self.run_button.configure(state=tk.NORMAL)
         self.generate_report_button.configure(state=tk.NORMAL)
         self.progress.stop()
+        self.report_progress.stop()
         self.open_pdf_button.configure(state=tk.DISABLED)
         messagebox.showerror("Crash Data Refiner", message.message)
 

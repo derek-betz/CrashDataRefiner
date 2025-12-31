@@ -38,6 +38,7 @@ def write_kmz_report(
     latitude_column: str,
     longitude_column: str,
     folder_name: str = "Crash Data",
+    label_order: str = "source",
 ) -> int:
     lat_key = _normalize_header(latitude_column)
     lon_key = _normalize_header(longitude_column)
@@ -52,15 +53,28 @@ def write_kmz_report(
         description = _build_description(normalized_row, lat_key=lat_key, lon_key=lon_key)
         placemarks.append((lat, lon, description))
 
+    placemarks = _order_placemarks(placemarks, label_order)
     kml = _render_kml(Path(path).name, folder_name, placemarks)
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("doc.kml", kml)
     return len(placemarks)
 
 
+def _order_placemarks(
+    placemarks: Sequence[Tuple[float, float, str]],
+    label_order: str,
+) -> list[Tuple[float, float, str]]:
+    normalized = (label_order or "").strip().lower()
+    if normalized == "west_to_east":
+        return sorted(placemarks, key=lambda item: (item[1], item[0]))
+    if normalized == "south_to_north":
+        return sorted(placemarks, key=lambda item: (item[0], item[1]))
+    return list(placemarks)
+
+
 def _build_description(row: Mapping[str, Any], *, lat_key: str, lon_key: str) -> str:
     # The KML description drives the Google Earth click preview bubble.
-    used_keys = {lat_key, lon_key}
+    used_keys = {lat_key, lon_key, "kmz_label"}
     summary_values: list[str] = []
 
     for candidates in _SUMMARY_FIELDS:

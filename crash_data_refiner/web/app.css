@@ -259,6 +259,10 @@ body {
   overflow: hidden;
 }
 
+.report-progress {
+  margin-top: 10px;
+}
+
 .progress-bar {
   width: 30%;
   height: 100%;
@@ -457,6 +461,8 @@ body {
   cursor: pointer;
   transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
   font-family: inherit;
+  position: relative;
+  overflow: hidden;
 }
 
 .btn.primary {
@@ -491,6 +497,37 @@ body {
 
 .btn:hover:not(:disabled) {
   transform: translateY(-1px);
+  box-shadow:
+    0 0 12px rgba(0, 255, 65, 0.35),
+    0 0 32px rgba(0, 255, 65, 0.18);
+}
+
+.btn::after {
+  content: "";
+  position: absolute;
+  top: -60%;
+  left: -120%;
+  width: 60%;
+  height: 220%;
+  background: linear-gradient(
+    110deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(126, 245, 154, 0.25) 45%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  opacity: 0;
+  pointer-events: none;
+  transform: skewX(-12deg);
+}
+
+.btn:hover:not(:disabled)::after {
+  opacity: 1;
+  animation: glimmer 1.1s ease;
+}
+
+@keyframes glimmer {
+  0% { left: -120%; }
+  100% { left: 160%; }
 }
 
 .map-frame {
@@ -498,13 +535,13 @@ body {
   border-radius: 14px;
   overflow: hidden;
   border: 1px solid var(--border);
-  min-height: 260px;
+  min-height: 630px;
   background: #020402;
 }
 
 .map-frame iframe {
   width: 100%;
-  height: 260px;
+  height: 630px;
   border: none;
   display: block;
 }

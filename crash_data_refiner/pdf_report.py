@@ -303,7 +303,11 @@ class CrashReportPDFBuilder:
         lon: float | None,
     ) -> list[str]:
         prioritized = self._prioritized_fields(row)
-        remaining_keys = [key for key in row.keys() if key not in prioritized and key not in {"latitude", "longitude"}]
+        remaining_keys = [
+            key
+            for key in row.keys()
+            if key not in prioritized and key not in {"latitude", "longitude", "kmz_label"}
+        ]
         remaining_keys.sort()
 
         bullets: list[str] = []

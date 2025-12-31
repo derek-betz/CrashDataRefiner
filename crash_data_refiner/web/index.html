@@ -58,18 +58,17 @@
               list="column-options"
               placeholder="Select or type longitude column"
             />
+            <label class="field-label" for="label-order">KMZ Label Order</label>
+            <select id="label-order" class="field input">
+              <option value="west_to_east">Left to right (west to east)</option>
+              <option value="south_to_north">Bottom to top (south to north)</option>
+            </select>
             <datalist id="column-options"></datalist>
             <div class="hint" id="column-hint">Upload crash data to populate column options.</div>
           </div>
 
           <div class="section" style="--delay: 0.15s">
             <div class="section-title">Report Outputs</div>
-            <label class="toggle">
-              <input id="generate-pdf" type="checkbox" checked />
-              <span class="toggle-ui"></span>
-              Generate full PDF crash report
-            </label>
-
             <label class="field-label">PDF Report Data (optional)</label>
             <div class="drop-zone compact" id="pdf-drop">
               <div class="drop-icon">
@@ -78,8 +77,14 @@
                 </svg>
               </div>
               <div class="drop-title" id="pdf-label">Drop alternate PDF data file</div>
-              <div class="drop-subtitle" id="pdf-hint">Leave blank to use refined data.</div>
+              <div class="drop-subtitle" id="pdf-hint">Leave blank to use refined output when available.</div>
               <input id="pdf-input" type="file" accept=".csv,.xlsx,.xlsm" />
+            </div>
+            <div class="actions inline">
+              <button class="btn secondary small" id="generate-report" disabled>Generate PDF Crash Report</button>
+            </div>
+            <div class="progress report-progress" id="report-progress">
+              <div class="progress-bar"></div>
             </div>
           </div>
 
@@ -114,30 +119,12 @@
 
         <section class="content">
           <div class="left-col">
-            <div class="card" style="--delay: 0.25s">
-              <div class="card-title">Run Refinement</div>
-              <div class="summary-grid">
-                <div class="summary-label">Crash data</div>
-                <div class="summary-value" id="summary-data">No file selected.</div>
-                <div class="summary-label">KMZ boundary</div>
-                <div class="summary-value" id="summary-kmz">No boundary selected.</div>
-                <div class="summary-label">Columns</div>
-                <div class="summary-value" id="summary-columns">Latitude / Longitude not set.</div>
-                <div class="summary-label">PDF source</div>
-                <div class="summary-value" id="summary-pdf">Refined output (default).</div>
-              </div>
-              <div class="actions">
-                <button class="btn primary" id="run-refine" disabled>Run Refinement</button>
-                <button class="btn secondary" id="clear-session">Clear Session</button>
-              </div>
-            </div>
-
             <div class="card" style="--delay: 0.3s">
               <div class="card-title">Map Report Preview</div>
               <div class="map-frame">
                 <iframe title="Map report preview" id="map-frame"></iframe>
                 <div class="map-placeholder" id="map-placeholder">
-                  Map report preview appears after a successful run.
+                  Map report preview appears after crash data and boundary files are loaded.
                 </div>
               </div>
               <div class="actions inline">
@@ -147,6 +134,22 @@
           </div>
 
           <div class="right-col">
+            <div class="card" style="--delay: 0.25s">
+              <div class="card-title">Run Refinement</div>
+              <div class="summary-grid">
+                <div class="summary-label">Crash data</div>
+                <div class="summary-value" id="summary-data">No file selected.</div>
+                <div class="summary-label">KMZ boundary</div>
+                <div class="summary-value" id="summary-kmz">No boundary selected.</div>
+              <div class="summary-label">Columns</div>
+              <div class="summary-value" id="summary-columns">Latitude / Longitude not set.</div>
+            </div>
+              <div class="actions">
+                <button class="btn primary" id="run-refine" disabled>Run Refinement</button>
+                <button class="btn secondary" id="clear-session">Clear Session</button>
+              </div>
+            </div>
+
             <div class="card log-card" style="--delay: 0.35s">
               <div class="card-header">
                 <div>
