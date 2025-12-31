@@ -82,6 +82,18 @@ Outputs include:
 The GUI also shows a reference map preview automatically once the crash data
 file and KMZ boundary are loaded.
 
+## Web UI
+
+Run the web application to share CrashDataRefiner over a network:
+
+```bash
+crash-data-refiner-web --host 0.0.0.0 --port 8081
+```
+
+Open `http://<server-host>:8081` in a browser. The web interface mirrors the GUI
+workflow: upload crash data and a KMZ boundary, confirm latitude and longitude
+columns, then run refinement. Outputs are stored under `outputs/web_runs/<run_id>/`.
+
 ## Python API
 
 ```python
