@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime, time
 from io import BytesIO
 import math
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+import re
+import textwrap
+from typing import Any, Mapping, Sequence
 
 import requests
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import inch
@@ -21,7 +24,126 @@ from .refiner import _normalize_header
 
 
 DEFAULT_TILE_URL = "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+DEFAULT_ROADS_TILE_URL = (
+    "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}"
+)
+DEFAULT_LABELS_TILE_URL = (
+    "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"
+)
 TILE_SIZE = 256
+IDENTIFIER_FIELDS: Sequence[tuple[str, str]] = (
+    ("crash_id", "Crash ID"),
+    ("report_number", "Report #"),
+    ("case_number", "Case #"),
+    ("collision_id", "Collision ID"),
+    ("event_number", "Event #"),
+    ("master_record_number", "Master Record #"),
+    ("unique_location_id", "Location ID"),
+)
+IDENTIFIER_KEYS = {key for key, _label in IDENTIFIER_FIELDS}
+DATE_TIME_FIELDS: Sequence[str] = ("crash_date_time", "collision_date_time", "crash_datetime")
+DATE_FIELDS: Sequence[str] = ("crash_date", "collision_date", "date")
+TIME_FIELDS: Sequence[str] = ("time_of_crash", "time", "hour_of_collision_timestamp", "crash_time")
+LOCATION_FIELDS: Sequence[str] = ("location", "address")
+ROAD_FIELDS: Sequence[str] = (
+    "roadway_name",
+    "road_name",
+    "street_name",
+    "route",
+    "roadway_id",
+    "roadway_number",
+)
+INTERSECTION_FIELDS: Sequence[str] = (
+    "intersection",
+    "cross_street",
+    "intersecting_road_name",
+    "intersecting_road_number",
+)
+SEVERITY_FIELDS: Sequence[str] = ("crash_severity_calc", "injury_severity", "severity", "crash_severity")
+COLLISION_FIELDS: Sequence[str] = ("manner_of_collision", "collision_type", "crash_type", "collision_manner")
+PRIMARY_FACTOR_FIELDS: Sequence[str] = ("primary_factor", "primary_cause")
+CONTRIBUTING_FACTOR_FIELDS: Sequence[str] = ("contributing_factor", "secondary_factor", "contributing_cause")
+CONDITION_PARTS: Sequence[tuple[str, Sequence[str]]] = (
+    ("Weather", ("weather",)),
+    ("Surface", ("surface_condition", "surface_type", "road_surface")),
+    ("Light", ("light_condition", "lighting")),
+)
+FLAG_FIELDS: Sequence[tuple[str, str]] = (
+    ("hit_and_run_indic", "Hit and run"),
+    ("work_zone", "Work zone"),
+    ("workzone", "Work zone"),
+    ("construct_indic", "Construction zone"),
+    ("school_zone_indic", "School zone"),
+    ("secondary_crash_indic", "Secondary crash"),
+    ("in_corporate_limit_indic", "In city limits"),
+)
+INJURY_COUNT_FIELDS: Sequence[tuple[str, Sequence[str]]] = (
+    ("Fatal", ("fatalities", "injury_fatal_number", "fatal_injuries", "fatal_count")),
+    ("Serious", ("serious_injuries", "inj_incapacitating_number", "incapacitating_injuries")),
+    ("Minor", ("minor_injuries", "inj_nonincapacitating_number", "nonincapacitating_injuries")),
+    ("Possible", ("inj_possible_number", "possible_injuries")),
+    ("Unknown", ("inj_unknown_number", "injury_unknown_number")),
+    ("Non-fatal", ("injury_nonfatal_number", "nonfatal_injuries")),
+)
+NARRATIVE_FIELDS: Sequence[str] = (
+    "accident_narrative",
+    "crash_narrative",
+    "crash_report_narrative",
+    "report_narrative",
+    "narrative",
+)
+DAMAGE_FIELDS: Sequence[str] = ("property_damage_type", "property_damage", "damage_type")
+LONG_TEXT_HINTS: Sequence[str] = ("narrative", "comment", "statement", "summary", "note")
+EXCLUDED_KEYS = {"latitude", "longitude", "kmz_label"}
+SKIP_TEXT_VALUES = {
+    "none",
+    "null",
+    "nan",
+    "n/a",
+    "na",
+    "unknown",
+    "unspecified",
+    "not reported",
+    "no junction involved",
+    "no",
+}
+LABEL_OVERRIDES = {
+    "crash_id": "Crash ID",
+    "report_number": "Report #",
+    "case_number": "Case #",
+    "collision_id": "Collision ID",
+    "event_number": "Event #",
+    "master_record_number": "Master Record #",
+    "unique_location_id": "Location ID",
+    "crash_severity_calc": "Severity",
+    "injury_severity": "Severity",
+    "manner_of_collision": "Collision",
+    "collision_type": "Collision type",
+    "crash_type": "Crash type",
+    "primary_factor": "Primary factor",
+    "contributing_factor": "Contributing factor",
+    "property_damage_type": "Damage",
+    "roadway_name": "Roadway",
+    "roadway_number": "Route",
+    "surface_condition": "Surface",
+    "surface_type": "Surface",
+    "light_condition": "Light",
+    "accident_narrative": "Narrative",
+    "crash_narrative": "Narrative",
+    "crash_report_narrative": "Narrative",
+    "report_narrative": "Narrative",
+}
+FIELD_SCORE_RULES: Sequence[tuple[int, Sequence[str]]] = (
+    (90, ("severity", "injur", "fatal", "serious", "minor")),
+    (85, ("collision", "manner", "crash_type", "primary_factor", "contributing_factor")),
+    (80, ("weather", "surface", "light", "roadway", "road", "street", "route", "intersection", "cross_street")),
+    (70, ("city", "county", "state", "location", "address")),
+    (60, ("vehicle", "driver", "unit", "speed", "occupant")),
+    (50, ("property_damage", "damage", "deer", "animal", "median")),
+    (40, ("work_zone", "school_zone", "construction", "workzone")),
+    (30, ("report", "case", "event", "number")),
+    (20, ("id",)),
+)
 
 
 @dataclass
@@ -36,29 +158,55 @@ class CrashReportConfig:
     header_size: int = 18
     label_size: int = 13
     map_zoom: int = 17
+    map_zoom_factor: float = 5.0
     map_width_px: int = 1400
     map_height_px: int = 800
     bullet_leading: float = 16.0
+    max_bullets: int = 12
+    max_value_chars: int = 120
+    narrative_size: int = 12
+    narrative_min_size: int = 9
+    narrative_leading: float = 14.0
+    narrative_gap: float = 6.0
 
 
 class AerialTileRenderer:
-    """Render an aerial map around a crash location using ArcGIS World Imagery."""
+    """Render an aerial map around a crash location using ArcGIS tiles."""
 
-    def __init__(self, tile_url: str = DEFAULT_TILE_URL, timeout: float = 8.0) -> None:
+    def __init__(
+        self,
+        tile_url: str = DEFAULT_TILE_URL,
+        *,
+        overlay_urls: Sequence[str] | None = None,
+        timeout: float = 8.0,
+    ) -> None:
         self.tile_url = tile_url
+        self.overlay_urls = overlay_urls or [DEFAULT_ROADS_TILE_URL]
         self.timeout = timeout
         self._session = requests.Session()
 
-    def render(self, lat: float | None, lon: float | None, *, width: int, height: int, zoom: int) -> Image.Image:
+    def render(
+        self,
+        lat: float | None,
+        lon: float | None,
+        *,
+        width: int,
+        height: int,
+        zoom: int,
+        zoom_factor: float = 1.0,
+        kmz_label: str | None = None,
+    ) -> Image.Image:
         if lat is None or lon is None:
             return self._fallback_image(width, height, "Location unavailable")
 
-        center_x, center_y = self._latlon_to_tile(lat, lon, zoom)
+        render_zoom, render_width, render_height = self._resolve_zoom(width, height, zoom, zoom_factor)
+
+        center_x, center_y = self._latlon_to_tile(lat, lon, render_zoom)
         center_px = center_x * TILE_SIZE
         center_py = center_y * TILE_SIZE
 
-        half_w = width / 2
-        half_h = height / 2
+        half_w = render_width / 2
+        half_h = render_height / 2
         min_px = center_px - half_w
         max_px = center_px + half_w
         min_py = center_py - half_h
@@ -69,30 +217,50 @@ class AerialTileRenderer:
         tile_min_y = math.floor(min_py / TILE_SIZE)
         tile_max_y = math.floor(max_py / TILE_SIZE)
 
-        map_image = Image.new("RGB", (width, height), (12, 16, 23))
-        tiles = 2**zoom
+        map_image = Image.new("RGBA", (render_width, render_height), (12, 16, 23, 255))
+        tiles = 2**render_zoom
         for tile_x in range(tile_min_x, tile_max_x + 1):
             wrapped_x = tile_x % tiles
             for tile_y in range(tile_min_y, tile_max_y + 1):
                 if tile_y < 0 or tile_y >= tiles:
                     tile_image = self._blank_tile()
                 else:
-                    tile_image = self._fetch_tile(wrapped_x, tile_y, zoom)
+                    tile_image = self._fetch_tile(wrapped_x, tile_y, render_zoom)
                 dest_x = int((tile_x * TILE_SIZE) - min_px)
                 dest_y = int((tile_y * TILE_SIZE) - min_py)
                 map_image.paste(tile_image, (dest_x, dest_y))
 
-        self._draw_marker(map_image, width // 2, height // 2)
-        return map_image
+        if (render_width, render_height) != (width, height):
+            map_image = map_image.resize((width, height), resample=Image.LANCZOS)
+
+        self._draw_marker(map_image, width // 2, height // 2, kmz_label)
+        return map_image.convert("RGB")
+
+    def _resolve_zoom(self, width: int, height: int, zoom: int, zoom_factor: float) -> tuple[int, int, int]:
+        if zoom_factor <= 1.0:
+            return zoom, width, height
+        zoom_delta = math.log(zoom_factor, 2)
+        render_zoom = int(math.ceil(zoom + zoom_delta))
+        scale = (2 ** (render_zoom - zoom)) / zoom_factor
+        render_width = max(1, int(math.ceil(width * scale)))
+        render_height = max(1, int(math.ceil(height * scale)))
+        return render_zoom, render_width, render_height
 
     def _fetch_tile(self, x: int, y: int, z: int) -> Image.Image:
-        url = self.tile_url.format(x=x, y=y, z=z)
+        base_image = self._fetch_tile_layer(self.tile_url, x, y, z, convert_mode="RGBA")
+        for overlay_url in self.overlay_urls:
+            overlay = self._fetch_tile_layer(overlay_url, x, y, z, convert_mode="RGBA")
+            base_image = Image.alpha_composite(base_image, overlay)
+        return base_image
+
+    def _fetch_tile_layer(self, url_template: str, x: int, y: int, z: int, *, convert_mode: str) -> Image.Image:
+        url = url_template.format(x=x, y=y, z=z)
         try:
             response = self._session.get(url, timeout=self.timeout)
             response.raise_for_status()
-            image = Image.open(BytesIO(response.content)).convert("RGB")
+            image = Image.open(BytesIO(response.content)).convert(convert_mode)
         except Exception:
-            image = self._blank_tile()
+            image = self._blank_tile().convert(convert_mode)
         return image
 
     @staticmethod
@@ -132,7 +300,7 @@ class AerialTileRenderer:
         return combined
 
     @staticmethod
-    def _draw_marker(image: Image.Image, x: int, y: int) -> None:
+    def _draw_marker(image: Image.Image, x: int, y: int, kmz_label: str | None = None) -> None:
         draw = ImageDraw.Draw(image)
         radius = 10
         draw.ellipse(
@@ -146,6 +314,23 @@ class AerialTileRenderer:
             (x - inner_radius, y - inner_radius, x + inner_radius, y + inner_radius),
             fill=(255, 255, 255),
         )
+        if kmz_label:
+            font = ImageFont.load_default()
+            text = kmz_label
+            bbox = font.getbbox(text)
+            text_w = bbox[2] - bbox[0]
+            text_h = bbox[3] - bbox[1]
+            padding = 4
+            label_x = x - radius - text_w - padding
+            label_y = y - radius - text_h - padding
+            rect = (
+                label_x - padding,
+                label_y - padding,
+                label_x + text_w + padding,
+                label_y + text_h + padding,
+            )
+            draw.rounded_rectangle(rect, radius=4, fill=(18, 24, 32, 220))
+            draw.text((label_x, label_y), text, font=font, fill=(255, 255, 255))
 
 
 def generate_pdf_report(
@@ -185,12 +370,15 @@ class CrashReportPDFBuilder:
         for index, row in enumerate(rows, start=1):
             lat = parse_coordinate(row.get(_normalize_header(latitude_column)))
             lon = parse_coordinate(row.get(_normalize_header(longitude_column)))
+            kmz_label = _format_kmz_label(row.get("kmz_label"))
             map_image = self.renderer.render(
                 lat,
                 lon,
                 width=self.config.map_width_px,
                 height=self.config.map_height_px,
                 zoom=self.config.map_zoom,
+                zoom_factor=self.config.map_zoom_factor,
+                kmz_label=kmz_label,
             )
             self._render_page(canvas_obj, width, height, row, map_image, lat, lon, index, len(rows))
             canvas_obj.showPage()
@@ -209,14 +397,23 @@ class CrashReportPDFBuilder:
         total: int,
     ) -> None:
         margin = self.config.margin
-        top_height = page_height * 0.46
-        map_height = page_height - top_height - (margin * 2)
+        content_height = page_height - (margin * 2)
+        map_height = content_height / 3
+        top_height = content_height - map_height
         content_top = page_height - margin
         panel_width = page_width - (margin * 2)
 
         self._draw_header(canvas_obj, margin, content_top, panel_width, top_height, index, total)
-        bullet_lines = self._build_bullet_lines(row, lat, lon)
-        self._draw_bullets(canvas_obj, margin, content_top - 0.8 * inch, panel_width, top_height - inch, bullet_lines)
+        summary_lines, narrative = self._build_bullet_lines(row, lat, lon)
+        self._draw_bullets(
+            canvas_obj,
+            margin,
+            content_top - 0.8 * inch,
+            panel_width,
+            top_height - inch,
+            summary_lines,
+            narrative,
+        )
         self._draw_map(canvas_obj, margin, margin, panel_width, map_height, map_image)
 
     def _draw_header(self, canvas_obj: canvas.Canvas, x: float, top: float, width: float, height: float, index: int, total: int) -> None:
@@ -239,26 +436,48 @@ class CrashReportPDFBuilder:
         top: float,
         width: float,
         height: float,
-        lines: Sequence[str],
+        summary_lines: Sequence[str],
+        narrative_text: str,
     ) -> None:
         padding = 22
         max_width = width - (padding * 2)
         font_name = self.config.body_font
-        font_size = self.config.label_size
-        wrapped_lines = self._wrap_lines(lines, font_name, font_size, max_width)
+        summary_font_size = self.config.label_size
+        summary_wrapped = self._wrap_lines(summary_lines, font_name, summary_font_size, max_width)
 
-        max_line_count = int(height // self.config.bullet_leading)
-        overflow = max(0, len(wrapped_lines) - max_line_count)
-        display_lines = wrapped_lines[:max_line_count]
-        if overflow:
-            display_lines.append(f"+ {overflow} more data points available in spreadsheet")
+        narrative_body = narrative_text.strip() if narrative_text else "Not provided."
+        narrative_font_size = self.config.narrative_size
+        narrative_min_size = self.config.narrative_min_size
+
+        narrative_lines = self._wrap_paragraph(narrative_body, font_name, narrative_font_size, max_width)
+        available_height = height
+
+        summary_wrapped, narrative_lines, narrative_font_size = self._fit_text_blocks(
+            summary_wrapped,
+            narrative_body,
+            font_name,
+            summary_font_size,
+            narrative_font_size,
+            narrative_min_size,
+            max_width,
+            available_height,
+        )
 
         text_object = canvas_obj.beginText()
         text_object.setTextOrigin(x + padding, top)
-        text_object.setFont(font_name, font_size)
+        text_object.setFont(font_name, summary_font_size)
+        text_object.setLeading(self.config.bullet_leading)
         text_object.setFillColor(colors.white)
-        for line in display_lines:
+        for line in summary_wrapped:
             text_object.textLine(line)
+        if summary_wrapped and narrative_lines:
+            text_object.moveCursor(0, -self.config.narrative_gap)
+        if narrative_lines:
+            text_object.setFont(font_name, narrative_font_size)
+            scaled_leading = self.config.narrative_leading * (narrative_font_size / max(summary_font_size, 1))
+            text_object.setLeading(scaled_leading)
+            for line in narrative_lines:
+                text_object.textLine(line)
         canvas_obj.drawText(text_object)
 
     def _draw_map(
@@ -280,89 +499,400 @@ class CrashReportPDFBuilder:
         inset_width = width - 24
         inset_height = height - 42
 
-        softened = map_image.filter(ImageFilter.GaussianBlur(radius=0.35))
-        map_reader = ImageReader(softened)
+        target_size = (max(1, int(inset_width)), max(1, int(inset_height)))
+        fitted = ImageOps.fit(map_image, target_size, method=Image.LANCZOS, centering=(0.5, 0.5))
+        map_reader = ImageReader(fitted)
         canvas_obj.drawImage(
             map_reader,
             inset_x,
             inset_y,
             width=inset_width,
             height=inset_height,
-            preserveAspectRatio=True,
-            anchor="sw",
+            preserveAspectRatio=False,
         )
-
-        canvas_obj.setFillColor(colors.Color(0.35, 0.44, 0.55))
-        canvas_obj.setFont(self.config.body_font, 10)
-        canvas_obj.drawString(x + 18, y + 10, "Google Earth-style aerial with crash pin")
 
     def _build_bullet_lines(
         self,
         row: Mapping[str, Any],
         lat: float | None,
         lon: float | None,
-    ) -> list[str]:
-        prioritized = self._prioritized_fields(row)
-        remaining_keys = [
-            key
-            for key in row.keys()
-            if key not in prioritized and key not in {"latitude", "longitude", "kmz_label"}
-        ]
-        remaining_keys.sort()
-
+    ) -> tuple[list[str], str]:
         bullets: list[str] = []
-        bullets.extend(self._format_fields(row, prioritized))
-        bullets.extend(self._format_fields(row, remaining_keys))
+        used_keys: set[str] = set()
 
         if lat is not None and lon is not None:
-            bullets.insert(0, f"Coordinates: {lat:.5f} deg, {lon:.5f} deg")
-        return bullets
+            bullets.append(f"Coordinates: {lat:.5f} deg, {lon:.5f} deg")
+            used_keys.update({"latitude", "longitude"})
 
-    def _format_fields(self, row: Mapping[str, Any], keys: Iterable[str]) -> list[str]:
-        formatted: list[str] = []
+        builders = (
+            self._build_identifier_line,
+            self._build_datetime_line,
+            self._build_location_line,
+            self._build_severity_line,
+            self._build_injury_line,
+            self._build_collision_line,
+            self._build_factor_line,
+            self._build_conditions_line,
+            self._build_context_line,
+            self._build_damage_line,
+        )
+        for builder in builders:
+            if len(bullets) >= self.config.max_bullets:
+                return bullets[: self.config.max_bullets]
+            line, keys = builder(row)
+            if line:
+                bullets.append(line)
+                used_keys.update(keys)
+
+        if len(bullets) < self.config.max_bullets:
+            bullets.extend(
+                self._select_additional_fields(
+                    row,
+                    used_keys=used_keys,
+                    limit=self.config.max_bullets - len(bullets),
+                )
+            )
+        narrative_text, narrative_keys = self._extract_narrative_text(row)
+        used_keys.update(narrative_keys)
+        return bullets, narrative_text or ""
+
+    def _first_value(
+        self,
+        row: Mapping[str, Any],
+        keys: Sequence[str],
+        *,
+        skip_zero: bool = False,
+    ) -> tuple[str, Any] | None:
         for key in keys:
             value = row.get(key)
             text = _stringify(value)
-            if not text:
+            if not text or _is_skippable_text(text):
                 continue
-            label = _human_label(key)
-            formatted.append(f"{label}: {text}")
-        return formatted
+            if skip_zero and _is_zeroish(text):
+                continue
+            return key, value
+        return None
 
-    def _prioritized_fields(self, row: Mapping[str, Any]) -> list[str]:
-        candidates: Sequence[Sequence[str]] = (
-            ("crash_id", "report_number", "case_number", "collision_id", "event_number"),
-            ("crash_date_time", "crash_date", "collision_date", "date", "time_of_crash", "time"),
-            ("city", "municipality", "county", "state"),
-            (
-                "location",
-                "address",
-                "street_name",
-                "road_name",
-                "route",
-                "intersection",
-                "cross_street",
-            ),
-            (
-                "injury_severity",
-                "severity",
-                "fatalities",
-                "serious_injuries",
-                "minor_injuries",
-                "injuries",
-                "property_damage",
-            ),
-            ("weather", "road_surface", "lighting", "work_zone", "workzone"),
-            ("collision_type", "manner_of_collision", "primary_factor", "contributing_factor"),
-        )
+    def _format_date_value(self, value: Any) -> tuple[str, bool]:
+        if value is None:
+            return "", False
+        if isinstance(value, datetime):
+            if value.time() == time(0, 0):
+                return value.strftime("%Y-%m-%d"), False
+            return value.strftime("%Y-%m-%d %H:%M"), True
+        if isinstance(value, date) and not isinstance(value, datetime):
+            return value.strftime("%Y-%m-%d"), False
+        if isinstance(value, time):
+            return value.strftime("%H:%M"), True
+        text = _stringify(value)
+        if not text:
+            return "", False
+        if " " in text:
+            date_part, time_part = text.split(" ", 1)
+            if time_part in {"00:00", "00:00:00"}:
+                return date_part, False
+        return text, ":" in text
 
-        prioritized: list[str] = []
-        for group in candidates:
-            for key in group:
-                if key in row and _stringify(row.get(key)):
-                    prioritized.append(key)
-                    break
-        return prioritized
+    def _build_identifier_line(self, row: Mapping[str, Any]) -> tuple[str | None, set[str]]:
+        for key, label in IDENTIFIER_FIELDS:
+            text = _stringify(row.get(key))
+            if text and not _is_skippable_text(text):
+                return f"{label}: {text}", set(IDENTIFIER_KEYS)
+        return None, set()
+
+    def _build_datetime_line(self, row: Mapping[str, Any]) -> tuple[str | None, set[str]]:
+        date_time_entry = self._first_value(row, DATE_TIME_FIELDS)
+        if date_time_entry:
+            key, value = date_time_entry
+            text, has_time = self._format_date_value(value)
+            if text:
+                if has_time:
+                    return f"Date/Time: {text}", {key}
+                time_entry = self._first_value(row, TIME_FIELDS)
+                if time_entry:
+                    time_key, time_value = time_entry
+                    time_text, _has_time = self._format_date_value(time_value)
+                    if time_text:
+                        return f"Date/Time: {text} {time_text}", {key, time_key}
+                return f"Date: {text}", {key}
+
+        date_entry = self._first_value(row, DATE_FIELDS)
+        time_entry = self._first_value(row, TIME_FIELDS)
+        if date_entry:
+            date_key, date_value = date_entry
+            date_text, has_time = self._format_date_value(date_value)
+            if date_text:
+                if has_time:
+                    return f"Date/Time: {date_text}", {date_key}
+                if time_entry:
+                    time_key, time_value = time_entry
+                    time_text, _has_time = self._format_date_value(time_value)
+                    if time_text:
+                        return f"Date/Time: {date_text} {time_text}", {date_key, time_key}
+                return f"Date: {date_text}", {date_key}
+
+        if time_entry:
+            time_key, time_value = time_entry
+            time_text, _has_time = self._format_date_value(time_value)
+            if time_text:
+                return f"Time: {time_text}", {time_key}
+        return None, set()
+
+    def _build_location_line(self, row: Mapping[str, Any]) -> tuple[str | None, set[str]]:
+        used_keys: set[str] = set()
+        address = ""
+
+        location_entry = self._first_value(row, LOCATION_FIELDS)
+        if location_entry:
+            key, value = location_entry
+            address = _stringify(value)
+            used_keys.add(key)
+        else:
+            road_entry = self._first_value(row, ROAD_FIELDS)
+            if road_entry:
+                road_key, road_value = road_entry
+                road_text = _stringify(road_value)
+                used_keys.add(road_key)
+                used_keys.update(ROAD_FIELDS)
+
+                house = _stringify(row.get("roadway_house_number"))
+                if house and not _is_skippable_text(house):
+                    used_keys.add("roadway_house_number")
+                else:
+                    house = ""
+
+                suffix = _stringify(row.get("roadway_suffix"))
+                if suffix and not _is_skippable_text(suffix):
+                    used_keys.add("roadway_suffix")
+                else:
+                    suffix = ""
+
+                address = " ".join(part for part in [house, road_text, suffix] if part)
+
+        intersection_entry = self._first_value(row, INTERSECTION_FIELDS)
+        if intersection_entry:
+            intersection_key, intersection_value = intersection_entry
+            intersection_text = _stringify(intersection_value)
+            used_keys.add(intersection_key)
+            if address:
+                address = f"{address} at {intersection_text}"
+            else:
+                address = intersection_text
+
+        city_text = _stringify(row.get("city"))
+        if city_text and not _is_skippable_text(city_text):
+            used_keys.add("city")
+        else:
+            city_text = ""
+
+        county_text = _stringify(row.get("county"))
+        if county_text and not _is_skippable_text(county_text):
+            used_keys.add("county")
+            if "county" not in county_text.lower():
+                county_text = f"{county_text} County"
+        else:
+            county_text = ""
+
+        state_text = _stringify(row.get("state"))
+        if state_text and not _is_skippable_text(state_text):
+            used_keys.add("state")
+        else:
+            state_text = ""
+
+        place_parts = [part for part in [city_text, county_text, state_text] if part]
+        location_parts = [part for part in [address, ", ".join(place_parts) if place_parts else ""] if part]
+
+        if location_parts:
+            return f"Location: {', '.join(location_parts)}", used_keys
+        return None, set()
+
+    def _build_severity_line(self, row: Mapping[str, Any]) -> tuple[str | None, set[str]]:
+        severity_entry = self._first_value(row, SEVERITY_FIELDS)
+        if severity_entry:
+            key, value = severity_entry
+            text = _stringify(value)
+            return f"Severity: {text}", {key}
+        return None, set()
+
+    def _build_injury_line(self, row: Mapping[str, Any]) -> tuple[str | None, set[str]]:
+        used_keys: set[str] = set()
+        parts: list[str] = []
+        saw_counts = False
+
+        for label, keys in INJURY_COUNT_FIELDS:
+            for key in keys:
+                raw = row.get(key)
+                text = _stringify(raw)
+                if not text or _is_skippable_text(text):
+                    continue
+                number = _coerce_number(text)
+                if number is None:
+                    continue
+                saw_counts = True
+                used_keys.add(key)
+                if number > 0:
+                    if label == "Non-fatal" and parts:
+                        break
+                    count = int(number) if number.is_integer() else number
+                    parts.append(f"{label} {count}")
+                break
+
+        if parts:
+            return f"Injuries: {', '.join(parts)}", used_keys
+
+        injury_entry = self._first_value(row, ("injuries", "injury_count", "injury"), skip_zero=True)
+        if injury_entry:
+            key, value = injury_entry
+            text = _stringify(value)
+            if text:
+                return f"Injuries: {text}", {key}
+
+        if saw_counts:
+            return "Injuries: None reported", used_keys
+        return None, set()
+
+    def _build_collision_line(self, row: Mapping[str, Any]) -> tuple[str | None, set[str]]:
+        collision_entry = self._first_value(row, COLLISION_FIELDS)
+        if collision_entry:
+            key, value = collision_entry
+            text = _stringify(value)
+            return f"Collision: {text}", {key}
+        return None, set()
+
+    def _build_factor_line(self, row: Mapping[str, Any]) -> tuple[str | None, set[str]]:
+        primary_entry = self._first_value(row, PRIMARY_FACTOR_FIELDS)
+        contributing_entry = self._first_value(row, CONTRIBUTING_FACTOR_FIELDS)
+
+        if primary_entry and contributing_entry:
+            primary_key, primary_value = primary_entry
+            contributing_key, contributing_value = contributing_entry
+            primary_text = _stringify(primary_value)
+            contributing_text = _stringify(contributing_value)
+            return (
+                f"Factors: Primary - {primary_text}; Contributing - {contributing_text}",
+                {primary_key, contributing_key},
+            )
+
+        if primary_entry:
+            key, value = primary_entry
+            return f"Primary factor: {_stringify(value)}", {key}
+
+        if contributing_entry:
+            key, value = contributing_entry
+            return f"Contributing factor: {_stringify(value)}", {key}
+        return None, set()
+
+    def _build_conditions_line(self, row: Mapping[str, Any]) -> tuple[str | None, set[str]]:
+        used_keys: set[str] = set()
+        parts: list[str] = []
+        for label, keys in CONDITION_PARTS:
+            values: list[str] = []
+            group_keys: set[str] = set()
+            for key in keys:
+                text = _stringify(row.get(key))
+                if not text or _is_skippable_text(text):
+                    continue
+                if text not in values:
+                    values.append(text)
+                group_keys.add(key)
+            if values:
+                used_keys.update(group_keys)
+                combined = " / ".join(values[:2])
+                parts.append(f"{label} {combined}")
+        if parts:
+            return f"Conditions: {'; '.join(parts)}", used_keys
+        return None, set()
+
+    def _build_context_line(self, row: Mapping[str, Any]) -> tuple[str | None, set[str]]:
+        used_keys: set[str] = set()
+        flags: list[str] = []
+        for key, label in FLAG_FIELDS:
+            truthy = _is_truthy(row.get(key))
+            if truthy is True:
+                flags.append(label)
+                used_keys.add(key)
+
+        deer_entry = self._first_value(row, ("deer_number",), skip_zero=True)
+        if deer_entry:
+            deer_key, deer_value = deer_entry
+            deer_count = _coerce_number(_stringify(deer_value))
+            if deer_count is not None and deer_count > 0:
+                used_keys.add(deer_key)
+                if flags:
+                    flags.append(f"Deer involved {int(deer_count)}")
+                else:
+                    return f"Deer involved: {int(deer_count)}", used_keys
+
+        if flags:
+            return f"Flags: {'; '.join(flags)}", used_keys
+        return None, set()
+
+    def _build_damage_line(self, row: Mapping[str, Any]) -> tuple[str | None, set[str]]:
+        damage_entry = self._first_value(row, DAMAGE_FIELDS)
+        if damage_entry:
+            key, value = damage_entry
+            text = _stringify(value)
+            return f"Damage: {text}", {key}
+        return None, set()
+
+    def _extract_narrative_text(self, row: Mapping[str, Any]) -> tuple[str | None, set[str]]:
+        candidates: list[tuple[int, str, str]] = []
+        for key in NARRATIVE_FIELDS:
+            text = _stringify(row.get(key))
+            if text:
+                candidates.append((len(text), key, text))
+        if not candidates:
+            return None, set()
+        candidates.sort(reverse=True)
+        _length, key, text = candidates[0]
+        return text, {key}
+
+    def _select_additional_fields(
+        self,
+        row: Mapping[str, Any],
+        *,
+        used_keys: set[str],
+        limit: int,
+    ) -> list[str]:
+        if limit <= 0:
+            return []
+
+        candidates: list[tuple[int, str, str]] = []
+        for key, value in row.items():
+            if key in used_keys or key in EXCLUDED_KEYS:
+                continue
+            if key.endswith("_id") and key not in IDENTIFIER_KEYS:
+                continue
+            if key in NARRATIVE_FIELDS or _has_long_text_hint(key):
+                continue
+            text = _stringify(value)
+            if not text or _is_skippable_text(text):
+                continue
+            if _is_zeroish(text):
+                continue
+            score = self._score_field(key, text)
+            candidates.append((score, key, text))
+
+        candidates.sort(key=lambda item: (-item[0], item[1]))
+        lines: list[str] = []
+        for _score, key, text in candidates[:limit]:
+            trimmed = _truncate_text(text, self.config.max_value_chars)
+            lines.append(f"{_label_for_key(key)}: {trimmed}")
+        return lines
+
+    def _score_field(self, key: str, text: str) -> int:
+        score = 0
+        for weight, tokens in FIELD_SCORE_RULES:
+            if any(token in key for token in tokens):
+                score += weight
+                break
+        if key.endswith("_id"):
+            score -= 25
+        if len(text) <= 12:
+            score += 6
+        elif len(text) <= 24:
+            score += 3
+        return score
 
     def _wrap_lines(
         self,
@@ -375,6 +905,68 @@ class CrashReportPDFBuilder:
         for line in lines:
             wrapped.extend(self._wrap_line(line, font_name, font_size, max_width))
         return wrapped
+
+    def _wrap_paragraph(
+        self,
+        text: str,
+        font_name: str,
+        font_size: int,
+        max_width: float,
+        *,
+        prefix: str = "Narrative: ",
+    ) -> list[str]:
+        words = text.split()
+        if not words:
+            return [prefix.strip()]
+        wrapped: list[str] = []
+        current = f"{prefix}{words[0]}"
+        for word in words[1:]:
+            candidate = f"{current} {word}"
+            if self._string_width(candidate, font_name, font_size) <= max_width:
+                current = candidate
+            else:
+                wrapped.append(current)
+                current = f"    {word}"
+        wrapped.append(current)
+        return wrapped
+
+    def _fit_text_blocks(
+        self,
+        summary_lines: list[str],
+        narrative_text: str,
+        font_name: str,
+        summary_font_size: int,
+        narrative_font_size: int,
+        narrative_min_size: int,
+        max_width: float,
+        available_height: float,
+    ) -> tuple[list[str], list[str], int]:
+        summary_leading = self.config.bullet_leading
+        narrative_leading = self.config.narrative_leading
+
+        def total_height(summary_count: int, narrative_count: int, narrative_size: int) -> float:
+            gap = self.config.narrative_gap if summary_count and narrative_count else 0.0
+            scaled_leading = narrative_leading * (narrative_size / max(summary_font_size, 1))
+            return (summary_count * summary_leading) + gap + (narrative_count * scaled_leading)
+
+        summary_wrapped = summary_lines
+        narrative_wrapped = self._wrap_paragraph(narrative_text, font_name, narrative_font_size, max_width)
+
+        while total_height(len(summary_wrapped), len(narrative_wrapped), narrative_font_size) > available_height:
+            if summary_wrapped:
+                summary_wrapped = summary_wrapped[:-1]
+                continue
+            if narrative_font_size <= narrative_min_size:
+                break
+            narrative_font_size -= 1
+            narrative_wrapped = self._wrap_paragraph(
+                narrative_text,
+                font_name,
+                narrative_font_size,
+                max_width,
+            )
+
+        return summary_wrapped, narrative_wrapped, narrative_font_size
 
     def _wrap_line(
         self,
@@ -421,7 +1013,92 @@ def _human_label(key: str) -> str:
 def _stringify(value: Any) -> str:
     if value is None:
         return ""
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    if isinstance(value, datetime):
+        if value.time() == time(0, 0):
+            return value.strftime("%Y-%m-%d")
+        return value.strftime("%Y-%m-%d %H:%M")
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d")
+    if isinstance(value, time):
+        return value.strftime("%H:%M")
+    if isinstance(value, float):
+        if math.isnan(value):
+            return ""
+        if value.is_integer():
+            return str(int(value))
+        return f"{value:.2f}".rstrip("0").rstrip(".")
+    if isinstance(value, int):
+        return str(value)
     text = str(value).strip()
-    if text.lower() in {"nan", "none", "null"}:
+    if not text:
         return ""
+    lowered = text.lower()
+    if lowered in {"nan", "none", "null"}:
+        return ""
+    if lowered in {"y", "yes", "true", "t"}:
+        return "Yes"
+    if lowered in {"n", "no", "false", "f"}:
+        return "No"
+    return " ".join(text.split())
+
+
+def _label_for_key(key: str) -> str:
+    return LABEL_OVERRIDES.get(key, _human_label(key))
+
+
+def _is_skippable_text(text: str) -> bool:
+    return text.strip().lower() in SKIP_TEXT_VALUES
+
+
+def _format_kmz_label(value: Any) -> str | None:
+    text = _stringify(value)
+    if not text:
+        return None
+    match = re.search(r"\d+", text)
+    if match:
+        return match.group(0)
     return text
+
+
+def _coerce_number(text: str) -> float | None:
+    if text is None:
+        return None
+    cleaned = str(text).replace(",", "").strip()
+    if not cleaned:
+        return None
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def _is_zeroish(text: str) -> bool:
+    number = _coerce_number(text)
+    return number is not None and abs(number) < 1e-9
+
+
+def _is_truthy(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"y", "yes", "true", "1"}:
+        return True
+    if text in {"n", "no", "false", "0"}:
+        return False
+    return None
+
+
+def _truncate_text(text: str, max_chars: int) -> str:
+    if max_chars <= 0:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    return textwrap.shorten(text, width=max_chars, placeholder="...")
+
+
+def _has_long_text_hint(key: str) -> bool:
+    return any(hint in key for hint in LONG_TEXT_HINTS)
