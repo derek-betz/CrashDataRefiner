@@ -5,3 +5,4 @@ __pycache__/
 crash_data_refiner.egg-info/
 outputs/
 .pytest_cache/
+API_KEY/
