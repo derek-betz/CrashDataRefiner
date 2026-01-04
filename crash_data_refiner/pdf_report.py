@@ -144,6 +144,11 @@ FIELD_SCORE_RULES: Sequence[tuple[int, Sequence[str]]] = (
     (30, ("report", "case", "event", "number")),
     (20, ("id",)),
 )
+ACCENT_COLOR = colors.Color(0.13, 0.26, 0.40)
+SUBDUED_TEXT_COLOR = colors.Color(0.31, 0.38, 0.45)
+PANEL_BORDER_COLOR = colors.Color(0.83, 0.87, 0.91)
+PANEL_BG_COLOR = colors.Color(0.97, 0.98, 0.99)
+MAP_FRAME_COLOR = colors.Color(0.93, 0.95, 0.97)
 
 
 @dataclass
@@ -152,22 +157,22 @@ class CrashReportConfig:
 
     title: str = "Crash Data Full Report"
     page_size: tuple[float, float] = letter
-    margin: float = 0.65 * inch
+    margin: float = 0.75 * inch
     header_font: str = "Helvetica-Bold"
     body_font: str = "Helvetica"
-    header_size: int = 18
+    header_size: int = 19
     label_size: int = 13
     map_zoom: int = 17
     map_zoom_factor: float = 5.0
-    map_width_px: int = 1400
-    map_height_px: int = 800
-    bullet_leading: float = 16.0
+    map_width_px: int = 1500
+    map_height_px: int = 950
+    bullet_leading: float = 16.4
     max_bullets: int = 12
     max_value_chars: int = 120
     narrative_size: int = 12
     narrative_min_size: int = 9
-    narrative_leading: float = 14.0
-    narrative_gap: float = 6.0
+    narrative_leading: float = 14.8
+    narrative_gap: float = 7.0
 
 
 class AerialTileRenderer:
@@ -181,7 +186,7 @@ class AerialTileRenderer:
         timeout: float = 8.0,
     ) -> None:
         self.tile_url = tile_url
-        self.overlay_urls = overlay_urls or [DEFAULT_ROADS_TILE_URL]
+        self.overlay_urls = overlay_urls or [DEFAULT_ROADS_TILE_URL, DEFAULT_LABELS_TILE_URL]
         self.timeout = timeout
         self._session = requests.Session()
 
@@ -380,7 +385,8 @@ class CrashReportPDFBuilder:
                 zoom_factor=self.config.map_zoom_factor,
                 kmz_label=kmz_label,
             )
-            self._render_page(canvas_obj, width, height, row, map_image, lat, lon, index, len(rows))
+            decorated_map = self._decorate_map(map_image, lat, lon, self.config.map_zoom)
+            self._render_page(canvas_obj, width, height, row, decorated_map, lat, lon, index, len(rows))
             canvas_obj.showPage()
         canvas_obj.save()
 
@@ -398,38 +404,56 @@ class CrashReportPDFBuilder:
     ) -> None:
         margin = self.config.margin
         content_height = page_height - (margin * 2)
-        map_height = content_height / 3
-        top_height = content_height - map_height
+        header_height = 1.1 * inch
+        body_height = content_height - header_height
         content_top = page_height - margin
-        panel_width = page_width - (margin * 2)
+        content_width = page_width - (margin * 2)
+        gutter = 0.28 * inch
 
-        self._draw_header(canvas_obj, margin, content_top, panel_width, top_height, index, total)
+        map_width = content_width * 0.53
+        info_width = content_width - map_width - gutter
+
+        map_height = body_height
+        info_height = body_height
+
+        self._draw_header(canvas_obj, margin, content_top, content_width, header_height, index, total)
         summary_lines, narrative = self._build_bullet_lines(row, lat, lon)
-        self._draw_bullets(
+        self._draw_info_panel(
             canvas_obj,
-            margin,
-            content_top - 0.8 * inch,
-            panel_width,
-            top_height - inch,
+            margin + map_width + gutter,
+            content_top - header_height,
+            info_width,
+            info_height,
             summary_lines,
             narrative,
         )
-        self._draw_map(canvas_obj, margin, margin, panel_width, map_height, map_image)
+        self._draw_map(canvas_obj, margin, margin, map_width, map_height, map_image)
 
-    def _draw_header(self, canvas_obj: canvas.Canvas, x: float, top: float, width: float, height: float, index: int, total: int) -> None:
-        canvas_obj.setFillColor(colors.Color(0.07, 0.09, 0.13))
+    def _draw_header(
+        self,
+        canvas_obj: canvas.Canvas,
+        x: float,
+        top: float,
+        width: float,
+        height: float,
+        index: int,
+        total: int,
+    ) -> None:
+        canvas_obj.setFillColor(PANEL_BG_COLOR)
         canvas_obj.roundRect(x, top - height, width, height, 12, fill=1, stroke=0)
-        canvas_obj.setFillColor(colors.Color(0.09, 0.13, 0.19))
-        canvas_obj.roundRect(x + 6, top - height + 6, width - 12, height - 12, 10, fill=1, stroke=0)
+        canvas_obj.setStrokeColor(PANEL_BORDER_COLOR)
+        canvas_obj.setLineWidth(1)
+        canvas_obj.roundRect(x, top - height, width, height, 12, fill=0, stroke=1)
 
-        canvas_obj.setFillColor(colors.white)
+        canvas_obj.setFillColor(ACCENT_COLOR)
         canvas_obj.setFont(self.config.header_font, self.config.header_size)
-        canvas_obj.drawString(x + 18, top - 26, self.config.title)
-        canvas_obj.setFillColor(colors.Color(0.35, 0.44, 0.55))
-        canvas_obj.setFont(self.config.body_font, 11)
-        canvas_obj.drawString(x + 18, top - 46, f"Crash {index} of {total}")
+        canvas_obj.drawString(x + 18, top - 28, self.config.title)
 
-    def _draw_bullets(
+        canvas_obj.setFillColor(SUBDUED_TEXT_COLOR)
+        canvas_obj.setFont(self.config.body_font, 11.5)
+        canvas_obj.drawString(x + 18, top - 48, f"Crash {index} of {total}")
+
+    def _draw_info_panel(
         self,
         canvas_obj: canvas.Canvas,
         x: float,
@@ -439,6 +463,12 @@ class CrashReportPDFBuilder:
         summary_lines: Sequence[str],
         narrative_text: str,
     ) -> None:
+        canvas_obj.setFillColor(PANEL_BG_COLOR)
+        canvas_obj.roundRect(x, top - height, width, height, 12, fill=1, stroke=0)
+        canvas_obj.setStrokeColor(PANEL_BORDER_COLOR)
+        canvas_obj.setLineWidth(1)
+        canvas_obj.roundRect(x, top - height, width, height, 12, fill=0, stroke=1)
+
         padding = 22
         max_width = width - (padding * 2)
         font_name = self.config.body_font
@@ -449,7 +479,14 @@ class CrashReportPDFBuilder:
         narrative_font_size = self.config.narrative_size
         narrative_min_size = self.config.narrative_min_size
 
-        narrative_lines = self._wrap_paragraph(narrative_body, font_name, narrative_font_size, max_width)
+        narrative_prefix = "Narrative — "
+        narrative_lines = self._wrap_paragraph(
+            narrative_body,
+            font_name,
+            narrative_font_size,
+            max_width,
+            prefix=narrative_prefix,
+        )
         available_height = height
 
         summary_wrapped, narrative_lines, narrative_font_size = self._fit_text_blocks(
@@ -461,13 +498,14 @@ class CrashReportPDFBuilder:
             narrative_min_size,
             max_width,
             available_height,
+            prefix=narrative_prefix,
         )
 
         text_object = canvas_obj.beginText()
-        text_object.setTextOrigin(x + padding, top)
+        text_object.setTextOrigin(x + padding, top - 22)
         text_object.setFont(font_name, summary_font_size)
         text_object.setLeading(self.config.bullet_leading)
-        text_object.setFillColor(colors.white)
+        text_object.setFillColor(colors.black)
         for line in summary_wrapped:
             text_object.textLine(line)
         if summary_wrapped and narrative_lines:
@@ -476,6 +514,7 @@ class CrashReportPDFBuilder:
             text_object.setFont(font_name, narrative_font_size)
             scaled_leading = self.config.narrative_leading * (narrative_font_size / max(summary_font_size, 1))
             text_object.setLeading(scaled_leading)
+            text_object.setFillColor(SUBDUED_TEXT_COLOR)
             for line in narrative_lines:
                 text_object.textLine(line)
         canvas_obj.drawText(text_object)
@@ -489,15 +528,16 @@ class CrashReportPDFBuilder:
         height: float,
         map_image: Image.Image,
     ) -> None:
-        canvas_obj.setFillColor(colors.Color(0.06, 0.08, 0.12))
+        canvas_obj.setFillColor(MAP_FRAME_COLOR)
         canvas_obj.roundRect(x, y, width, height, 12, fill=1, stroke=0)
-        canvas_obj.setFillColor(colors.Color(0.09, 0.13, 0.19))
-        canvas_obj.roundRect(x + 6, y + 6, width - 12, height - 12, 10, fill=1, stroke=0)
+        canvas_obj.setStrokeColor(PANEL_BORDER_COLOR)
+        canvas_obj.setLineWidth(1)
+        canvas_obj.roundRect(x, y, width, height, 12, fill=0, stroke=1)
 
-        inset_x = x + 12
-        inset_y = y + 18
-        inset_width = width - 24
-        inset_height = height - 42
+        inset_x = x + 10
+        inset_y = y + 14
+        inset_width = width - 20
+        inset_height = height - 28
 
         target_size = (max(1, int(inset_width)), max(1, int(inset_height)))
         fitted = ImageOps.fit(map_image, target_size, method=Image.LANCZOS, centering=(0.5, 0.5))
@@ -510,6 +550,103 @@ class CrashReportPDFBuilder:
             height=inset_height,
             preserveAspectRatio=False,
         )
+
+    def _decorate_map(self, map_image: Image.Image, lat: float | None, lon: float | None, zoom: int) -> Image.Image:
+        annotated = map_image.convert("RGBA")
+        draw = ImageDraw.Draw(annotated)
+
+        box_padding = 10
+        text_color = (18, 24, 32, 255)
+        overlay_color = (247, 248, 249, 210)
+        accent_color = (32, 86, 126, 255)
+
+        # North arrow
+        arrow_box = (24, 24, 92, 110)
+        draw.rounded_rectangle(arrow_box, radius=8, fill=overlay_color)
+        center_x = (arrow_box[0] + arrow_box[2]) // 2
+        arrow_top = arrow_box[1] + 12
+        arrow_height = 48
+        arrow_half_width = 12
+        points = [
+            (center_x, arrow_top),
+            (center_x - arrow_half_width, arrow_top + arrow_height),
+            (center_x + arrow_half_width, arrow_top + arrow_height),
+        ]
+        draw.polygon(points, fill=accent_color)
+        draw.line(
+            (center_x, arrow_top + arrow_height, center_x, arrow_top + arrow_height + 14),
+            fill=accent_color,
+            width=3,
+        )
+        font = ImageFont.load_default()
+        north_bbox = font.getbbox("N")
+        north_width = north_bbox[2] - north_bbox[0]
+        north_height = north_bbox[3] - north_bbox[1]
+        draw.text(
+            (center_x - north_width / 2, arrow_top + arrow_height + 16),
+            "N",
+            font=font,
+            fill=text_color,
+        )
+
+        # Scale bar
+        scale_box_height = 48
+        scale_box_width = 200
+        scale_x0 = 24
+        scale_y0 = annotated.height - scale_box_height - 24
+        scale_rect = (scale_x0, scale_y0, scale_x0 + scale_box_width, scale_y0 + scale_box_height)
+        draw.rounded_rectangle(scale_rect, radius=8, fill=overlay_color)
+
+        meters_per_px = None
+        if lat is not None:
+            meters_per_px = math.cos(math.radians(lat)) * 2 * math.pi * 6378137 / (TILE_SIZE * (2**zoom))
+        if meters_per_px is None or meters_per_px <= 0:
+            meters_per_px = 1.0
+
+        target_length_m = self._select_scale_length(meters_per_px)
+        bar_width_px = max(40, min(int(target_length_m / meters_per_px), scale_box_width - (box_padding * 2)))
+        bar_height_px = 9
+        bar_x0 = scale_x0 + box_padding
+        bar_y0 = scale_y0 + scale_box_height - box_padding - bar_height_px - 6
+        draw.rectangle(
+            (bar_x0, bar_y0, bar_x0 + bar_width_px, bar_y0 + bar_height_px),
+            fill=accent_color,
+        )
+        label = self._format_distance(target_length_m)
+        label_bbox = font.getbbox(label)
+        label_width = label_bbox[2] - label_bbox[0]
+        draw.text(
+            (bar_x0, scale_y0 + box_padding),
+            "Scale",
+            font=font,
+            fill=text_color,
+        )
+        draw.text(
+            (bar_x0 + bar_width_px - label_width, bar_y0 - 14),
+            label,
+            font=font,
+            fill=text_color,
+        )
+
+        return annotated.convert("RGB")
+
+    @staticmethod
+    def _select_scale_length(meters_per_px: float) -> int:
+        preferred = [10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000, 10000]
+        for length in preferred:
+            px = length / meters_per_px
+            if 80 <= px <= 180:
+                return length
+        return preferred[-1]
+
+    @staticmethod
+    def _format_distance(meters: float) -> str:
+        if meters >= 1000:
+            km = meters / 1000
+            if km.is_integer():
+                return f"{int(km)} km"
+            return f"{km:.1f} km"
+        return f"{int(meters)} m"
 
     def _build_bullet_lines(
         self,
@@ -940,6 +1077,8 @@ class CrashReportPDFBuilder:
         narrative_min_size: int,
         max_width: float,
         available_height: float,
+        *,
+        prefix: str = "Narrative: ",
     ) -> tuple[list[str], list[str], int]:
         summary_leading = self.config.bullet_leading
         narrative_leading = self.config.narrative_leading
@@ -950,7 +1089,7 @@ class CrashReportPDFBuilder:
             return (summary_count * summary_leading) + gap + (narrative_count * scaled_leading)
 
         summary_wrapped = summary_lines
-        narrative_wrapped = self._wrap_paragraph(narrative_text, font_name, narrative_font_size, max_width)
+        narrative_wrapped = self._wrap_paragraph(narrative_text, font_name, narrative_font_size, max_width, prefix=prefix)
 
         while total_height(len(summary_wrapped), len(narrative_wrapped), narrative_font_size) > available_height:
             if summary_wrapped:
@@ -964,6 +1103,7 @@ class CrashReportPDFBuilder:
                 font_name,
                 narrative_font_size,
                 max_width,
+                prefix=prefix,
             )
 
         return summary_wrapped, narrative_wrapped, narrative_font_size
