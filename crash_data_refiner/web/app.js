@@ -376,7 +376,9 @@ async function finalizeRun(status) {
 
   renderOutputs(data.outputs || []);
   renderMetrics(data.summary || {});
-  setMapPreview(data.summary ? data.summary.mapReport : null);
+  if (data.summary && data.summary.mapReport) {
+    setMapPreview(data.summary.mapReport);
+  }
 
   const finishedAt = data.finishedAt;
   if (finishedAt) {
@@ -496,7 +498,7 @@ function bindInputs() {
     el.snapshotLastRun.textContent = "No runs yet.";
     el.outputLinks.textContent = "No outputs yet.";
     el.metrics.innerHTML = "";
-    el.mapPlaceholder.textContent = "Map report preview appears after crash data and boundary files are loaded.";
+    el.mapPlaceholder.textContent = "Map preview appears after crash data and boundary files are loaded.";
     setMapPreview(null);
     setReportProgressRunning(false);
     updateSummary();

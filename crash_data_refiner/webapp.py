@@ -15,6 +15,7 @@ from .geo import BoundaryFilterReport, load_kmz_polygon, parse_coordinate, point
 from .kmz_report import write_kmz_report
 from .map_report import write_map_report
 from .pdf_report import generate_pdf_report
+from .summary_report import generate_summary_report
 from .refiner import CrashDataRefiner, RefinementReport, _normalize_header
 from .spreadsheets import read_spreadsheet, read_spreadsheet_headers, write_spreadsheet
 
@@ -271,6 +272,13 @@ def _pdf_output_path(output_path: Path) -> Path:
     return output_path.with_name(f"{base_name}_Crash Data Full Report.pdf")
 
 
+def _summary_output_path(output_path: Path) -> Path:
+    base_name = output_path.stem
+    if base_name.lower().endswith("_refined"):
+        base_name = base_name[:-8]
+    return output_path.with_name(f"{base_name}_Crash Data Summary Report.pdf")
+
+
 def _create_state() -> RunState:
     run_id = _new_id()
     state = RunState(run_id=run_id, created_at=datetime.utcnow())
@@ -311,7 +319,6 @@ def _build_summary(
     report: RefinementReport,
     boundary_report: BoundaryFilterReport,
     kmz_count: Optional[int],
-    map_report_name: str,
 ) -> Dict[str, Any]:
     metrics = [
         {
@@ -354,7 +361,6 @@ def _build_summary(
         })
     return {
         "metrics": metrics,
-        "mapReport": map_report_name,
     }
 
 
@@ -718,27 +724,6 @@ def _run_refinement_job(
         write_spreadsheet(str(invalid_path), invalid_rows)
         state.append_log(f"Invalid coordinate output saved: {invalid_path.name}")
 
-        lat_norm = _normalize_header(lat_column)
-        lon_norm = _normalize_header(lon_column)
-        points = []
-        for row in refined_rows:
-            lat = parse_coordinate(row.get(lat_norm))
-            lon = parse_coordinate(row.get(lon_norm))
-            if lat is not None and lon is not None:
-                points.append((lat, lon))
-
-        map_report_name = "Crash Data Refiner Map Report.html"
-        map_report_path = run_dir / map_report_name
-        write_map_report(
-            str(map_report_path),
-            polygon=boundary,
-            points=points,
-            included_count=boundary_report.included_rows,
-            excluded_count=boundary_report.excluded_rows,
-            invalid_count=boundary_report.invalid_rows,
-        )
-        state.append_log("Map report generated.")
-
         kmz_output_path = _kmz_output_path(output_path)
         kmz_count = write_kmz_report(
             str(kmz_output_path),
@@ -749,6 +734,17 @@ def _run_refinement_job(
         )
         state.append_log(f"KMZ report generated: {kmz_output_path.name} ({kmz_count} placemarks)")
 
+        summary_output_path = _summary_output_path(output_path)
+        generate_summary_report(
+            str(summary_output_path),
+            rows=refined_rows,
+            latitude_column=lat_column,
+            longitude_column=lon_column,
+            boundary_report=boundary_report,
+            source_name=data_path.name,
+        )
+        state.append_log(f"Summary report generated: {summary_output_path.name}")
+
         state.status = "success"
         state.message = "Refinement complete."
         state.append_log(state.message)
@@ -758,7 +754,6 @@ def _run_refinement_job(
             report=report,
             boundary_report=boundary_report,
             kmz_count=kmz_count,
-            map_report_name=map_report_name,
         )
     except Exception as exc:
         state.status = "error"

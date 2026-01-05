@@ -19,8 +19,8 @@ except Exception:  # pragma: no cover - optional dependency for GUI previews
 
 from .geo import load_kmz_polygon, parse_coordinate
 from .kmz_report import write_kmz_report
-from .map_report import write_map_report
 from .pdf_report import generate_pdf_report
+from .summary_report import generate_summary_report
 from .refiner import CrashDataRefiner
 from .refiner import _normalize_header
 from .spreadsheets import read_spreadsheet, read_spreadsheet_headers, write_spreadsheet
@@ -1061,6 +1061,12 @@ class CrashRefinerApp:
             base_name = base_name[:-8]
         return output_path.with_name(f"{base_name}_Crash Data Full Report.pdf")
 
+    def _summary_output_path(self, output_path: Path) -> Path:
+        base_name = output_path.stem
+        if base_name.lower().endswith("_refined"):
+            base_name = base_name[:-8]
+        return output_path.with_name(f"{base_name}_Crash Data Summary Report.pdf")
+
     def _on_run(self) -> None:
         data_path = self.data_path_var.get().strip()
         kmz_path = self.kmz_path_var.get().strip()
@@ -1196,25 +1202,6 @@ class CrashRefinerApp:
             invalid_path = self._invalid_output_path(output_file)
             write_spreadsheet(str(invalid_path), invalid_rows)
 
-            lat_norm = _normalize_header(lat_column)
-            lon_norm = _normalize_header(lon_column)
-            points = []
-            for row in refined_rows:
-                lat = parse_coordinate(row.get(lat_norm))
-                lon = parse_coordinate(row.get(lon_norm))
-                if lat is not None and lon is not None:
-                    points.append((lat, lon))
-
-            map_report_path = output_file.with_name("Crash Data Refiner Map Report.html")
-            write_map_report(
-                str(map_report_path),
-                polygon=boundary,
-                points=points,
-                included_count=boundary_report.included_rows,
-                excluded_count=boundary_report.excluded_rows,
-                invalid_count=boundary_report.invalid_rows,
-            )
-
             kmz_path = self._kmz_output_path(output_file)
             kmz_count = write_kmz_report(
                 str(kmz_path),
@@ -1224,12 +1211,23 @@ class CrashRefinerApp:
                 label_order=label_order,
             )
 
+            summary_path = self._summary_output_path(output_file)
+            generate_summary_report(
+                str(summary_path),
+                rows=refined_rows,
+                latitude_column=lat_column,
+                longitude_column=lon_column,
+                boundary_report=boundary_report,
+                source_name=Path(data_path).name,
+            )
+
             payload = {
                 "included": boundary_report.included_rows,
                 "excluded": boundary_report.excluded_rows,
                 "invalid": boundary_report.invalid_rows,
                 "kmz_path": str(kmz_path),
                 "kmz_count": kmz_count,
+                "summary_path": str(summary_path),
                 "output_folder": str(self._ensure_outputs_dir()),
             }
             self._queue.put(PipelineMessage(level="success", message="Refinement complete.", payload=payload))
@@ -1293,6 +1291,10 @@ class CrashRefinerApp:
         if kmz_path:
             count_text = f" ({kmz_count} placemarks)" if kmz_count is not None else ""
             self._append_log(f"KMZ output saved: {kmz_path}{count_text}")
+
+        summary_path = payload.get("summary_path")
+        if summary_path:
+            self._append_log(f"Summary report saved: {summary_path}")
 
         pdf_path = payload.get("pdf_path")
         if pdf_path:
