@@ -86,6 +86,70 @@ def _coerce_boolean(value: str) -> Optional[bool]:
     return None
 
 
+_CRASH_TYPE_COLUMNS = {
+    "crash_type",
+    "manner_of_collision",
+    "collision_type",
+    "collision_manner",
+}
+_ROUTE_COLUMNS = {
+    "route",
+    "roadway_name",
+    "roadway_id",
+    "road_name",
+    "street_name",
+    "roadway_number",
+    "roadway_suffix",
+    "intersecting_road_name",
+    "intersecting_road_number",
+}
+
+_CRASH_TYPE_CANONICAL = {
+    "rear end": "Rear End",
+    "rearend": "Rear End",
+    "head on": "Head On",
+    "headon": "Head On",
+    "left turn": "Left Turn",
+    "right turn": "Right Turn",
+    "sideswipe same direction": "Same Direction Sideswipe",
+    "same direction sideswipe": "Same Direction Sideswipe",
+    "sideswipe opposite direction": "Opposite Direction Sideswipe",
+    "opposite direction sideswipe": "Opposite Direction Sideswipe",
+    "backing": "Backing Crash",
+    "backing crash": "Backing Crash",
+}
+
+
+def _standardize_crash_type(value: Any) -> Any:
+    if value is None or not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text:
+        return value
+    cleaned = re.sub(r"[^0-9a-zA-Z]+", " ", text)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        return value
+    normalized = cleaned.lower()
+    if normalized in _CRASH_TYPE_CANONICAL:
+        return _CRASH_TYPE_CANONICAL[normalized]
+    return " ".join(word.capitalize() for word in normalized.split())
+
+
+def _standardize_route(value: Any) -> Any:
+    if value is None or not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text:
+        return value
+    cleaned = re.sub(r"[.,]", "", text)
+    cleaned = re.sub(r"[-/]+", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        return value
+    return cleaned.upper()
+
+
 @dataclass
 class RefinementConfig:
     """Configuration describing how a crash dataset should be cleaned."""
@@ -215,6 +279,14 @@ class CrashDataRefiner:
                         coerced_booleans += 1
                 else:
                     row[column] = None
+
+            for column in _CRASH_TYPE_COLUMNS:
+                if column in row:
+                    row[column] = _standardize_crash_type(row.get(column))
+
+            for column in _ROUTE_COLUMNS:
+                if column in row:
+                    row[column] = _standardize_route(row.get(column))
 
             refined_rows.append(row)
             kept_rows += 1

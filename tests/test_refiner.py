@@ -131,3 +131,19 @@ def test_cli_round_trip(tmp_path: Path) -> None:
     exit_code = cli_main(args)
     assert exit_code == 0
     assert output.exists()
+
+
+def test_refine_rows_standardizes_crash_type_and_route() -> None:
+    refiner = CrashDataRefiner()
+    refined_rows, report = refiner.refine_rows(
+        [
+            {
+                "Crash Type": "rear-end",
+                "Route": " N St. Rd. 127 ",
+            }
+        ]
+    )
+
+    assert report.total_rows == 1
+    assert refined_rows[0]["crash_type"] == "Rear End"
+    assert refined_rows[0]["route"] == "N ST RD 127"
