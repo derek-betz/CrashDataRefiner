@@ -11,10 +11,14 @@ requires-python = ">=3.10"
 readme = "docs/README.md"
 dependencies = [
     "flask>=2.3.0,<3.0.0",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
     "openpyxl>=3.1",
     "tkintermapview",
     "Pillow>=10.4",
     "reportlab>=4.2",
+    "python-multipart>=0.0.9",
+    "python-dotenv>=1.0",
     "requests>=2.32",
 ]
 
@@ -27,6 +31,11 @@ dev = [
 crash-data-refiner = "crash_data_refiner.cli:main"
 crash-data-refiner-gui = "crash_data_refiner.gui:main"
 crash-data-refiner-web = "crash_data_refiner.webapp:main"
+crash-data-refiner-api = "crash_data_refiner.api:start_server"
 
 [tool.setuptools.package-data]
 crash_data_refiner = ["web/**"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["crash_data_refiner*"]

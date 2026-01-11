@@ -7,3 +7,4 @@ outputs/
 outputs-for-reference/Example Crash Data Summary Page.jpg
 .pytest_cache/
 API_KEY/
+.env
