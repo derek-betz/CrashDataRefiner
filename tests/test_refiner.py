@@ -140,10 +140,24 @@ def test_refine_rows_standardizes_crash_type_and_route() -> None:
             {
                 "Crash Type": "rear-end",
                 "Route": " N St. Rd. 127 ",
-            }
+                "Intersecting Road Name": "W Broad St",
+                "Roadway Name": "Broad",
+                "Roadway ID": "State Road 4",
+            },
+            {
+                "Route": "IN 127",
+                "Intersecting Road Name": "Broad",
+                "Roadway Name": "Broad St",
+            },
         ]
     )
 
-    assert report.total_rows == 1
+    assert report.total_rows == 2
     assert refined_rows[0]["crash_type"] == "Rear End"
-    assert refined_rows[0]["route"] == "N ST RD 127"
+    assert refined_rows[0]["route"] == "SR 127"
+    assert refined_rows[1]["route"] == "SR 127"
+    assert refined_rows[0]["intersecting_road_name"] == "BROAD ST"
+    assert refined_rows[1]["intersecting_road_name"] == "BROAD ST"
+    assert refined_rows[0]["roadway_name"] == "BROAD ST"
+    assert refined_rows[1]["roadway_name"] == "BROAD ST"
+    assert refined_rows[0]["roadway_id"] == "SR 4"

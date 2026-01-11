@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from collections import Counter
 import re
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
 
@@ -119,6 +120,155 @@ _CRASH_TYPE_CANONICAL = {
     "backing crash": "Backing Crash",
 }
 
+_ROUTE_TOKEN_MAP = {
+    "AVENUE": "AVE",
+    "BOULEVARD": "BLVD",
+    "CIRCLE": "CIR",
+    "COURT": "CT",
+    "DRIVE": "DR",
+    "EAST": "E",
+    "EASTBOUND": "E",
+    "EB": "E",
+    "EXPRESSWAY": "EXPY",
+    "FREEWAY": "FWY",
+    "FORT": "FT",
+    "HIGHWAY": "HWY",
+    "INTERSTATE": "I",
+    "JUNCTION": "JCT",
+    "LANE": "LN",
+    "MOUNT": "MT",
+    "NORTH": "N",
+    "NORTHBOUND": "N",
+    "NB": "N",
+    "PARKWAY": "PKWY",
+    "PLACE": "PL",
+    "ROAD": "RD",
+    "SOUTH": "S",
+    "SOUTHBOUND": "S",
+    "SB": "S",
+    "SQUARE": "SQ",
+    "STREET": "ST",
+    "TURNPIKE": "TPKE",
+    "TRAIL": "TRL",
+    "WEST": "W",
+    "WESTBOUND": "W",
+    "WB": "W",
+}
+_ROUTE_MULTI_TOKENS = (
+    (("U", "S", "ROUTE"), "US"),
+    (("U", "S", "HWY"), "US"),
+    (("U", "S", "HIGHWAY"), "US"),
+    (("US", "ROUTE"), "US"),
+    (("US", "HWY"), "US"),
+    (("US", "HIGHWAY"), "US"),
+    (("U", "S"), "US"),
+    (("STATE", "ROAD"), "SR"),
+    (("STATE", "ROUTE"), "SR"),
+    (("STATE", "RD"), "SR"),
+    (("STATE", "HWY"), "SR"),
+    (("STATE", "HIGHWAY"), "SR"),
+    (("ST", "RD"), "SR"),
+    (("ST", "ROAD"), "SR"),
+    (("S", "R"), "SR"),
+    (("COUNTY", "ROAD"), "CR"),
+    (("COUNTY", "RD"), "CR"),
+    (("CO", "RD"), "CR"),
+)
+_DIRECTION_TOKENS = {
+    "N",
+    "S",
+    "E",
+    "W",
+    "NE",
+    "NW",
+    "SE",
+    "SW",
+    "NB",
+    "SB",
+    "EB",
+    "WB",
+}
+_ROUTE_PREFIX_TOKENS = {"SR", "US", "I", "CR"}
+_ROUTE_SUFFIX_TOKENS = {
+    "AVE",
+    "BLVD",
+    "CIR",
+    "CT",
+    "DR",
+    "EXPY",
+    "FWY",
+    "HWY",
+    "JCT",
+    "LN",
+    "PKWY",
+    "PL",
+    "RD",
+    "SQ",
+    "ST",
+    "TPKE",
+    "TRL",
+}
+
+
+def _strip_direction_tokens(tokens: List[str]) -> List[str]:
+    while tokens and tokens[0] in _DIRECTION_TOKENS:
+        tokens = tokens[1:]
+    while tokens and tokens[-1] in _DIRECTION_TOKENS:
+        tokens = tokens[:-1]
+    return tokens
+
+
+def _is_numeric_token(token: str) -> bool:
+    return token.isdigit()
+
+
+def _is_route_number(tokens: List[str]) -> bool:
+    if any(token in _ROUTE_PREFIX_TOKENS for token in tokens):
+        return True
+    return any(_is_numeric_token(token) for token in tokens)
+
+
+def _preferred_route_suffixes(rows: Iterable[Dict[str, Any]]) -> Dict[str, str]:
+    suffix_counts: Dict[str, Counter[str]] = {}
+    for row in rows:
+        for column in _ROUTE_COLUMNS:
+            value = row.get(column)
+            if value is None or not isinstance(value, str):
+                continue
+            tokens = value.split()
+            if not tokens or _is_route_number(tokens):
+                continue
+            if tokens[-1] not in _ROUTE_SUFFIX_TOKENS:
+                continue
+            base = " ".join(tokens[:-1]).strip()
+            if not base:
+                continue
+            suffix_counts.setdefault(base, Counter())[tokens[-1]] += 1
+    preferred: Dict[str, str] = {}
+    for base, counts in suffix_counts.items():
+        if len(counts) == 1:
+            preferred[base] = next(iter(counts.keys()))
+    return preferred
+
+
+def _apply_route_suffixes(rows: List[Dict[str, Any]]) -> None:
+    preferred = _preferred_route_suffixes(rows)
+    if not preferred:
+        return
+    for row in rows:
+        for column in _ROUTE_COLUMNS:
+            value = row.get(column)
+            if value is None or not isinstance(value, str):
+                continue
+            tokens = value.split()
+            if not tokens or _is_route_number(tokens):
+                continue
+            if tokens[-1] in _ROUTE_SUFFIX_TOKENS:
+                continue
+            base = " ".join(tokens).strip()
+            suffix = preferred.get(base)
+            if suffix:
+                row[column] = f"{base} {suffix}"
 
 def _standardize_crash_type(value: Any) -> Any:
     if value is None or not isinstance(value, str):
@@ -147,7 +297,33 @@ def _standardize_route(value: Any) -> Any:
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     if not cleaned:
         return value
-    return cleaned.upper()
+    tokens = cleaned.upper().split()
+    collapsed: list[str] = []
+    index = 0
+    while index < len(tokens):
+        if tokens[index] == "IN":
+            next_token = tokens[index + 1] if index + 1 < len(tokens) else ""
+            if next_token and _is_numeric_token(next_token):
+                collapsed.append("SR")
+                index += 1
+                continue
+        matched = False
+        for parts, replacement in _ROUTE_MULTI_TOKENS:
+            length = len(parts)
+            if tokens[index:index + length] == list(parts):
+                collapsed.append(replacement)
+                index += length
+                matched = True
+                break
+        if not matched:
+            collapsed.append(tokens[index])
+            index += 1
+
+    normalized = [_ROUTE_TOKEN_MAP.get(token, token) for token in collapsed]
+    if "HWY" in normalized and any(token in _ROUTE_PREFIX_TOKENS for token in normalized):
+        normalized = [token for token in normalized if token != "HWY"]
+    normalized = _strip_direction_tokens(normalized)
+    return " ".join(normalized)
 
 
 @dataclass
@@ -290,6 +466,8 @@ class CrashDataRefiner:
 
             refined_rows.append(row)
             kept_rows += 1
+
+        _apply_route_suffixes(refined_rows)
 
         report = RefinementReport(
             total_rows=total_rows,
