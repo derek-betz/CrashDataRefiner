@@ -19,8 +19,6 @@ quickly normalize disparate data sources.
 - **Duplicate detection** - drop repeated records by specifying identifying
   columns.
 - **Gap filling** - inject default values for missing columns before exporting.
-- **Actionable reporting** - receive a summary of how many rows were kept,
-  dropped, or coerced during the refinement process.
 
 ## Installation
 

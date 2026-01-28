@@ -56,7 +56,7 @@ def _read_csv(path: str) -> SpreadsheetData:
     with open(path, "r", newline="", encoding="utf-8-sig") as handle:
         reader = csv.DictReader(handle)
         headers = list(reader.fieldnames or [])
-        rows = [dict(row) for row in reader]
+        rows = [dict(row) for row in reader if not _is_blank_row(row)]
     return SpreadsheetData(headers=headers, rows=rows)
 
 
@@ -87,7 +87,7 @@ def _read_xlsx(path: str) -> SpreadsheetData:
                 continue
             if idx < len(row):
                 row_dict[header] = row[idx]
-        if row_dict:
+        if row_dict and not _is_blank_row(row_dict):
             rows.append(row_dict)
     return SpreadsheetData(headers=headers, rows=rows)
 
@@ -150,3 +150,19 @@ def _resolve_headers(rows: Sequence[Mapping[str, Any]], headers: Sequence[str] |
         header_list.remove("kmz_label")
         header_list.insert(0, "kmz_label")
     return header_list
+
+
+def _is_blank_row(row: Mapping[str, Any]) -> bool:
+    if not row:
+        return True
+    return all(_is_blank_value(value) for value in row.values())
+
+
+def _is_blank_value(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple)):
+        return all(_is_blank_value(item) for item in value)
+    return False

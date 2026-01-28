@@ -39,6 +39,8 @@ def test_kmz_polygon_filtering(tmp_path: Path) -> None:
         {"Lat": "1", "Lon": "0"},
         {"Lat": "3", "Lon": "0"},
         {"Lat": "", "Lon": "0"},
+        {"Lat": "", "Lon": ""},
+        {"Lat": None, "Lon": None},
     ]
 
     included, excluded, invalid, report = refiner.filter_rows_by_boundary(

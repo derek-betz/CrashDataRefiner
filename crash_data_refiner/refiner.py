@@ -87,6 +87,22 @@ def _coerce_boolean(value: str) -> Optional[bool]:
     return None
 
 
+def _is_blank_value(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple)):
+        return all(_is_blank_value(item) for item in value)
+    return False
+
+
+def _is_blank_row(row: Mapping[str, Any]) -> bool:
+    if not row:
+        return True
+    return all(_is_blank_value(value) for value in row.values())
+
+
 _CRASH_TYPE_COLUMNS = {
     "crash_type",
     "manner_of_collision",
@@ -393,8 +409,10 @@ class CrashDataRefiner:
         refined_rows: List[Dict[str, Any]] = []
 
         for raw_row in rows:
-            total_rows += 1
             row = self._normalize_row(raw_row) if normalize_headers else dict(raw_row)
+            if _is_blank_row(row):
+                continue
+            total_rows += 1
 
             if not self._has_required_columns(row):
                 dropped_missing_required += 1
@@ -498,8 +516,10 @@ class CrashDataRefiner:
         total_rows = 0
 
         for raw_row in rows:
-            total_rows += 1
             row = self._normalize_row(raw_row) if normalize_headers else dict(raw_row)
+            if _is_blank_row(row):
+                continue
+            total_rows += 1
 
             lat = parse_coordinate(row.get(lat_column))
             lon = parse_coordinate(row.get(lon_column))

@@ -15,7 +15,6 @@ from .geo import BoundaryFilterReport, load_kmz_polygon, parse_coordinate, point
 from .kmz_report import write_kmz_report
 from .map_report import write_map_report
 from .pdf_report import generate_pdf_report
-from .summary_report import generate_summary_report
 from .refiner import CrashDataRefiner, RefinementReport, _normalize_header
 from .spreadsheets import read_spreadsheet, read_spreadsheet_headers, write_spreadsheet
 
@@ -272,11 +271,6 @@ def _pdf_output_path(output_path: Path) -> Path:
     return output_path.with_name(f"{base_name}_Crash Data Full Report.pdf")
 
 
-def _summary_output_path(output_path: Path) -> Path:
-    base_name = output_path.stem
-    if base_name.lower().endswith("_refined"):
-        base_name = base_name[:-8]
-    return output_path.with_name(f"{base_name}_Crash Data Summary Report.pdf")
 
 
 def _create_state() -> RunState:
@@ -733,17 +727,6 @@ def _run_refinement_job(
             label_order=label_order,
         )
         state.append_log(f"KMZ report generated: {kmz_output_path.name} ({kmz_count} placemarks)")
-
-        summary_output_path = _summary_output_path(output_path)
-        generate_summary_report(
-            str(summary_output_path),
-            rows=refined_rows,
-            latitude_column=lat_column,
-            longitude_column=lon_column,
-            boundary_report=boundary_report,
-            source_name=data_path.name,
-        )
-        state.append_log(f"Summary report generated: {summary_output_path.name}")
 
         state.status = "success"
         state.message = "Refinement complete."
