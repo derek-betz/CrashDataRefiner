@@ -12,11 +12,16 @@ from flask import Flask, abort, jsonify, request, send_from_directory
 from werkzeug.utils import secure_filename
 
 from .geo import BoundaryFilterReport, load_kmz_polygon, parse_coordinate, point_in_polygon
-from .kmz_report import write_kmz_report
 from .map_report import write_map_report
-from .pdf_report import generate_pdf_report
-from .refiner import CrashDataRefiner, RefinementReport, _normalize_header
-from .spreadsheets import read_spreadsheet, read_spreadsheet_headers, write_spreadsheet
+from .normalize import guess_lat_lon_columns, normalize_header
+from .refiner import RefinementReport
+from .services import (
+    pdf_output_path,
+    refined_output_path,
+    run_pdf_report,
+    run_refinement_pipeline,
+)
+from .spreadsheets import read_spreadsheet, read_spreadsheet_headers
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 STATIC_DIR = Path(__file__).resolve().parent / "web"
@@ -136,44 +141,8 @@ def _list_outputs(output_dir: Path) -> List[Dict[str, Any]]:
     return items
 
 
-def _score_lat_header(header: str) -> int:
-    norm = _normalize_header(header)
-    if norm in {"lat", "latitude"}:
-        return 100
-    if "latitude" in norm:
-        return 90
-    if norm.startswith("lat_") or norm.endswith("_lat"):
-        return 80
-    if norm in {"y", "y_coord", "y_coordinate"}:
-        return 70
-    if "lat" in norm:
-        return 50
-    return 0
-
-
-def _score_lon_header(header: str) -> int:
-    norm = _normalize_header(header)
-    if norm in {"lon", "long", "longitude"}:
-        return 100
-    if "longitude" in norm:
-        return 90
-    if norm.startswith(("lon_", "long_")) or norm.endswith(("_lon", "_long")):
-        return 80
-    if norm in {"x", "x_coord", "x_coordinate"}:
-        return 70
-    if "lon" in norm or "long" in norm:
-        return 50
-    return 0
-
-
 def _guess_lat_lon(headers: List[str]) -> Tuple[Optional[str], Optional[str]]:
-    scored_lat = [( _score_lat_header(h), h) for h in headers]
-    lat_choice = max(scored_lat, default=(0, None))
-    scored_lon = [( _score_lon_header(h), h) for h in headers]
-    lon_choice = max(scored_lon, default=(0, None))
-    lat = lat_choice[1] if lat_choice[0] > 0 else None
-    lon = lon_choice[1] if lon_choice[0] > 0 else None
-    return lat, lon
+    return guess_lat_lon_columns(headers)
 
 
 def _build_preview_points(
@@ -183,14 +152,14 @@ def _build_preview_points(
     lon_column: str,
     boundary: Any,
 ) -> Tuple[List[Tuple[float, float]], int, int, int]:
-    lat_key = _normalize_header(lat_column)
-    lon_key = _normalize_header(lon_column)
+    lat_key = normalize_header(lat_column)
+    lon_key = normalize_header(lon_column)
     points: List[Tuple[float, float]] = []
     included = 0
     excluded = 0
     invalid = 0
     for row in rows:
-        normalized_row = {_normalize_header(key): value for key, value in row.items()}
+        normalized_row = {normalize_header(key): value for key, value in row.items()}
         lat = parse_coordinate(normalized_row.get(lat_key))
         lon = parse_coordinate(normalized_row.get(lon_key))
         if lat is None or lon is None:
@@ -202,75 +171,6 @@ def _build_preview_points(
         else:
             excluded += 1
     return points, included, excluded, invalid
-
-
-def _order_and_number_rows(
-    rows: List[Dict[str, Any]],
-    *,
-    lat_column: str,
-    lon_column: str,
-    label_order: str,
-) -> List[Dict[str, Any]]:
-    lat_key = _normalize_header(lat_column)
-    lon_key = _normalize_header(lon_column)
-    indexed: List[Tuple[Tuple[float, float, int] | Tuple[int], Dict[str, Any]]] = []
-    for idx, row in enumerate(rows):
-        lat = parse_coordinate(row.get(lat_key))
-        lon = parse_coordinate(row.get(lon_key))
-        if label_order == "south_to_north":
-            lat_value = lat if lat is not None else float("inf")
-            lon_value = lon if lon is not None else float("inf")
-            key = (lat_value, lon_value, idx)
-        elif label_order == "west_to_east":
-            lon_value = lon if lon is not None else float("inf")
-            lat_value = lat if lat is not None else float("inf")
-            key = (lon_value, lat_value, idx)
-        else:
-            key = (idx,)
-        indexed.append((key, row))
-
-    indexed.sort(key=lambda item: item[0])
-    ordered = [item[1] for item in indexed]
-    for number, row in enumerate(ordered, start=1):
-        row["kmz_label"] = number
-    return ordered
-
-
-def _build_output_headers(rows: List[Dict[str, Any]]) -> List[str]:
-    header_set: set[str] = set()
-    for row in rows:
-        header_set.update(row.keys())
-    headers = sorted(header_set)
-    if "kmz_label" in headers:
-        headers.remove("kmz_label")
-        headers.insert(0, "kmz_label")
-    return headers
-
-
-def _refined_output_path(run_dir: Path, input_name: str) -> Path:
-    input_file = Path(input_name)
-    suffix = input_file.suffix or ".csv"
-    return run_dir / f"{input_file.stem}_refined{suffix}"
-
-
-def _invalid_output_path(output_path: Path) -> Path:
-    return output_path.with_name(f"Crashes Without Valid Lat-Long Data{output_path.suffix}")
-
-
-def _kmz_output_path(output_path: Path) -> Path:
-    base_name = output_path.stem
-    if base_name.lower().endswith("_refined"):
-        base_name = base_name[:-8]
-    return output_path.with_name(f"{base_name}_Crash Data.kmz")
-
-
-def _pdf_output_path(output_path: Path) -> Path:
-    base_name = output_path.stem
-    if base_name.lower().endswith("_refined"):
-        base_name = base_name[:-8]
-    return output_path.with_name(f"{base_name}_Crash Data Full Report.pdf")
-
-
 
 
 def _create_state() -> RunState:
@@ -616,7 +516,7 @@ def start_report() -> Any:
             if not data_name:
                 raise ValueError("Previous run is missing the crash data file reference.")
             source_name = data_name
-            data_path = _refined_output_path(output_dir, data_name)
+            data_path = refined_output_path(output_dir, data_name)
             if not data_path.exists():
                 raise ValueError("Refined output from the previous run was not found.")
         else:
@@ -653,15 +553,15 @@ def start_report() -> Any:
         state.inputs["latColumn"] = lat_column
         state.inputs["lonColumn"] = lon_column
 
-        output_path = _refined_output_path(output_dir, source_name)
-        pdf_output_path = _pdf_output_path(output_path)
+        output_path = refined_output_path(output_dir, source_name)
+        pdf_out_path = pdf_output_path(output_path)
     except Exception as exc:
         _discard_state(state.run_id)
         return jsonify({"error": str(exc)}), 400
 
     thread = threading.Thread(
         target=_run_report_job,
-        args=(state, source_path, pdf_output_path, lat_column, lon_column),
+        args=(state, source_path, pdf_out_path, lat_column, lon_column),
         daemon=True,
     )
     thread.start()
@@ -683,50 +583,16 @@ def _run_refinement_job(
     state.output_dir = run_dir
     state.append_log(f"Starting refinement for {data_path.name}")
     try:
-        boundary = load_kmz_polygon(str(kmz_path))
-        state.append_log("Loaded KMZ boundary polygon.")
-
-        data = read_spreadsheet(str(data_path))
-        state.append_log(f"Loaded {len(data.rows)} crash rows.")
-
-        refiner = CrashDataRefiner()
-        refined_rows, report, boundary_report, invalid_rows = refiner.refine_rows_with_boundary(
-            data.rows,
-            boundary=boundary,
-            latitude_column=lat_column,
-            longitude_column=lon_column,
-        )
-        refined_rows = _order_and_number_rows(
-            refined_rows,
+        result = run_refinement_pipeline(
+            data_path=data_path,
+            kmz_path=kmz_path,
+            run_dir=run_dir,
             lat_column=lat_column,
             lon_column=lon_column,
             label_order=label_order,
         )
-        state.append_log(
-            "Boundary filter complete: "
-            f"{boundary_report.included_rows} included, "
-            f"{boundary_report.excluded_rows} excluded, "
-            f"{boundary_report.invalid_rows} invalid."
-        )
-
-        output_path = _refined_output_path(run_dir, data_path.name)
-        output_headers = _build_output_headers(refined_rows)
-        write_spreadsheet(str(output_path), refined_rows, headers=output_headers)
-        state.append_log(f"Refined output saved: {output_path.name}")
-
-        invalid_path = _invalid_output_path(output_path)
-        write_spreadsheet(str(invalid_path), invalid_rows)
-        state.append_log(f"Invalid coordinate output saved: {invalid_path.name}")
-
-        kmz_output_path = _kmz_output_path(output_path)
-        kmz_count = write_kmz_report(
-            str(kmz_output_path),
-            rows=refined_rows,
-            latitude_column=lat_column,
-            longitude_column=lon_column,
-            label_order=label_order,
-        )
-        state.append_log(f"KMZ report generated: {kmz_output_path.name} ({kmz_count} placemarks)")
+        for msg in result.log:
+            state.append_log(msg)
 
         state.status = "success"
         state.message = "Refinement complete."
@@ -734,9 +600,9 @@ def _run_refinement_job(
 
         state.summary = _build_summary(
             state=state,
-            report=report,
-            boundary_report=boundary_report,
-            kmz_count=kmz_count,
+            report=result.refinement_report,
+            boundary_report=result.boundary_report,
+            kmz_count=result.kmz_count,
         )
     except Exception as exc:
         state.status = "error"
@@ -752,7 +618,7 @@ def _run_refinement_job(
 def _run_report_job(
     state: RunState,
     source_path: Path,
-    pdf_output_path: Path,
+    pdf_out_path: Path,
     lat_column: str,
     lon_column: str,
 ) -> None:
@@ -760,12 +626,11 @@ def _run_report_job(
     state.started_at = datetime.utcnow()
     state.append_log(f"Generating PDF report from {source_path.name}")
     try:
-        data = read_spreadsheet(str(source_path))
-        generate_pdf_report(
-            str(pdf_output_path),
-            rows=data.rows,
-            latitude_column=lat_column,
-            longitude_column=lon_column,
+        run_pdf_report(
+            source_path=source_path,
+            output_path=pdf_out_path,
+            lat_column=lat_column,
+            lon_column=lon_column,
         )
         state.status = "success"
         state.message = "PDF report generated."

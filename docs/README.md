@@ -1,45 +1,76 @@
 # CrashDataRefiner
 
-CrashDataRefiner is a lightweight toolkit for converting messy roadway crash
-exports into consistent, analysis-ready CSV files. It provides a configurable
-refinement pipeline and a convenient command line interface so analysts can
-quickly normalize disparate data sources.
+CrashDataRefiner converts messy crash exports into consistent, analysis-ready
+outputs. It is designed as a **web-first internal application** for engineering
+teams, with a hosted web interface, a REST API, and a CLI for scripted use.
+
+## Architecture
+
+```
+crash_data_refiner/
+├── normalize.py      # Public header-normalization & column-inference helpers
+├── refiner.py        # Core CrashDataRefiner pipeline
+├── services.py       # Shared orchestration layer (pipeline, path helpers, PDF)
+├── webapp.py         # Flask web application (primary interface)
+├── api.py            # FastAPI REST API
+├── cli.py            # Command-line interface
+├── geo.py            # KMZ/polygon geospatial utilities
+├── kmz_report.py     # KMZ crash output generation
+├── map_report.py     # HTML map report generation
+├── pdf_report.py     # PDF full-report generation
+└── spreadsheets.py   # CSV/Excel read-write helpers
+```
 
 ## Features
 
-- **Header normalization** - converts source column names to `snake_case` so
+- **Header normalization** – converts source column names to `snake_case` so
   they can be consumed reliably by downstream tooling.
-- **Flexible type coercion** - parse dates, convert numeric fields, and map
+- **Flexible type coercion** – parse dates, convert numeric fields, and map
   boolean columns while gracefully handling blanks and malformed values.
-- **Relevance boundary filtering** - keep only crash points within a KMZ
+- **Relevance boundary filtering** – keep only crash points within a KMZ
   polygon (single polygon required) and report excluded/invalid coordinates.
-- **KMZ crash output** - generate a Google Earth-ready KMZ using the standard
-  crash data template, including the click preview (the bubble shown when a
-  crash is clicked).
-- **Duplicate detection** - drop repeated records by specifying identifying
+- **KMZ crash output** – generate a Google Earth-ready KMZ using the standard
+  crash data template, including the click preview narrative.
+- **HTML map report** – interactive map showing the boundary polygon and
+  included crash points with counts.
+- **PDF full report** – tabular PDF report of refined crash rows.
+- **Duplicate detection** – drop repeated records by specifying identifying
   columns.
-- **Gap filling** - inject default values for missing columns before exporting.
+- **Gap filling** – inject default values for missing columns before exporting.
 
 ## Installation
-
-The project is distributed as a standard Python package. You can install it in
-a virtual environment directly from the repository:
 
 ```bash
 pip install -e .
 ```
 
-## Windows bootstrap
+## Web Application (primary interface)
 
-Install Python 3.12, development dependencies, and run tests:
+Start the web server:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/bootstrap.ps1
+```bash
+crash-data-refiner-web --host 0.0.0.0 --port 8081
 ```
 
-## Usage
+Open `http://<server-host>:8081` in a browser. Upload crash data (CSV or Excel)
+and a KMZ boundary file, confirm latitude and longitude columns, then run
+refinement. Outputs are stored under `outputs/web_runs/<run_id>/`.
 
-Refine a crash dataset using the CLI:
+## REST API
+
+Start the FastAPI server:
+
+```bash
+crash-data-refiner-api
+```
+
+By default the API listens on port 9005.  Set `HOST` and `PORT` environment
+variables to override. The `POST /refine` endpoint accepts a crash data file
+and an optional KMZ boundary file and returns a JSON summary.
+
+## CLI
+
+Refine a crash dataset from the command line:
 
 ```bash
 crash-data-refiner raw_crashes.csv refined_crashes.csv \
@@ -52,50 +83,12 @@ crash-data-refiner raw_crashes.csv refined_crashes.csv \
   --fill-defaults '{"City": "Unknown"}'
 ```
 
-After processing, a JSON-formatted summary describing dropped or modified rows
-is printed to the console.
-
-## Desktop GUI
-
-Launch the native desktop app:
-
-```bash
-crash-data-refiner-gui
-```
-
-Or double-click `launch_gui.pyw` on Windows. The GUI expects:
-
-- One crash data file (CSV or Excel).
-- One KMZ file containing **exactly one polygon** used as the relevance boundary.
-- Latitude and longitude columns (auto-detected, but adjustable).
-
-Outputs include:
-
-- The refined crash data (inside the polygon) saved under `outputs/`.
-- `Crashes Without Valid Lat-Long Data` saved next to the refined output.
-- A KMZ crash file (`*_Crash Data.kmz`) formatted like the standard output with
-  the crash narrative in the click preview bubble.
-- A map report HTML file showing the polygon and included crashes, plus counts.
-
-The GUI also shows a reference map preview automatically once the crash data
-file and KMZ boundary are loaded.
-
-## Web UI
-
-Run the web application to share CrashDataRefiner over a network:
-
-```bash
-crash-data-refiner-web --host 0.0.0.0 --port 8081
-```
-
-Open `http://<server-host>:8081` in a browser. The web interface mirrors the GUI
-workflow: upload crash data and a KMZ boundary, confirm latitude and longitude
-columns, then run refinement. Outputs are stored under `outputs/web_runs/<run_id>/`.
+A JSON summary describing dropped or modified rows is printed to the console.
 
 ## Python API
 
 ```python
-from crash_data_refiner.refiner import CrashDataRefiner, RefinementConfig
+from crash_data_refiner import CrashDataRefiner, RefinementConfig
 
 config = RefinementConfig(
     required_columns=["Crash ID", "Crash Date"],
@@ -114,13 +107,33 @@ rows, report = refiner.refine_rows(csv_rows)
 The returned `rows` list contains normalized dictionaries ready for loading
 into analytics platforms, and `report` captures overall data hygiene metrics.
 
+Use the shared services layer for the full pipeline:
+
+```python
+from pathlib import Path
+from crash_data_refiner.services import run_refinement_pipeline
+
+result = run_refinement_pipeline(
+    data_path=Path("crashes.csv"),
+    kmz_path=Path("boundary.kmz"),
+    run_dir=Path("outputs/run_001"),
+    lat_column="Latitude",
+    lon_column="Longitude",
+)
+print(result.log)
+```
+
 ## Development
 
-Install development dependencies and run the test suite with:
+Install development dependencies and run the test suite:
 
 ```bash
 pip install -e .[dev]
-python scripts/run_tests.py
+python -m pytest tests/
 ```
 
-Feel free to adapt the pipeline to match the quirks of your crash dataset.
+## Secrets
+
+The `API_KEY/` directory is intentionally excluded from version control.
+Create it locally on each machine to store secrets.
+
