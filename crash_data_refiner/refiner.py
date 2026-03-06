@@ -12,6 +12,10 @@ import re
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 from .geo import BoundaryFilterReport, PolygonBoundary, parse_coordinate, point_in_polygon
+from .normalize import normalize_header
+
+# Keep the private name as an alias so existing internal usages are unaffected.
+_normalize_header = normalize_header
 
 
 _DATE_FORMATS: Sequence[str] = (
@@ -23,13 +27,6 @@ _DATE_FORMATS: Sequence[str] = (
     "%m/%d/%Y %H:%M:%S",
     "%d-%b-%Y",
 )
-
-
-def _normalize_header(header: str) -> str:
-    """Convert a column header to ``snake_case`` suitable for programmatic access."""
-    cleaned = re.sub(r"[^0-9a-zA-Z]+", "_", header.strip().lower())
-    cleaned = re.sub(r"_{2,}", "_", cleaned)
-    return cleaned.strip("_")
 
 
 def _parse_date(value: str) -> Optional[str]:
