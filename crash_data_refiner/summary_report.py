@@ -16,7 +16,7 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfgen import canvas
 
 from .geo import BoundaryFilterReport
-from .refiner import _normalize_header
+from .normalize import normalize_header
 
 
 DATE_TIME_FIELDS: Sequence[str] = (
@@ -645,7 +645,7 @@ def _analyze_rows(
 
 
 def _normalize_row(row: Mapping[str, Any]) -> dict[str, Any]:
-    return {_normalize_header(key): value for key, value in row.items()}
+    return {normalize_header(key): value for key, value in row.items()}
 
 
 def _stringify(value: Any) -> str:

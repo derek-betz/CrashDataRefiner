@@ -7,7 +7,7 @@ import zipfile
 from xml.sax.saxutils import escape
 
 from .geo import parse_coordinate
-from .refiner import _normalize_header
+from .normalize import normalize_header
 
 
 _SUMMARY_FIELDS: Sequence[Sequence[str]] = (
@@ -40,12 +40,12 @@ def write_kmz_report(
     folder_name: str = "Crash Data",
     label_order: str = "source",
 ) -> int:
-    lat_key = _normalize_header(latitude_column)
-    lon_key = _normalize_header(longitude_column)
+    lat_key = normalize_header(latitude_column)
+    lon_key = normalize_header(longitude_column)
 
     placemarks: list[Tuple[float, float, str]] = []
     for row in rows:
-        normalized_row = {_normalize_header(key): value for key, value in row.items()}
+        normalized_row = {normalize_header(key): value for key, value in row.items()}
         lat = parse_coordinate(normalized_row.get(lat_key))
         lon = parse_coordinate(normalized_row.get(lon_key))
         if lat is None or lon is None:

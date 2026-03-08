@@ -9,13 +9,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from collections import Counter
 import re
-from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from .geo import BoundaryFilterReport, PolygonBoundary, parse_coordinate, point_in_polygon
-from .normalize import normalize_header
-
-# Keep the private name as an alias so existing internal usages are unaffected.
-_normalize_header = normalize_header
+from .normalize import is_blank_row, normalize_header
 
 
 _DATE_FORMATS: Sequence[str] = (
@@ -82,22 +79,6 @@ def _coerce_boolean(value: str) -> Optional[bool]:
     if text in {"false", "f", "0", "no", "n"}:
         return False
     return None
-
-
-def _is_blank_value(value: Any) -> bool:
-    if value is None:
-        return True
-    if isinstance(value, str):
-        return not value.strip()
-    if isinstance(value, (list, tuple)):
-        return all(_is_blank_value(item) for item in value)
-    return False
-
-
-def _is_blank_row(row: Mapping[str, Any]) -> bool:
-    if not row:
-        return True
-    return all(_is_blank_value(value) for value in row.values())
 
 
 _CRASH_TYPE_COLUMNS = {
@@ -353,13 +334,13 @@ class RefinementConfig:
 
     def normalized(self) -> "RefinementConfig":
         return RefinementConfig(
-            required_columns=[_normalize_header(col) for col in self.required_columns],
-            date_columns=[_normalize_header(col) for col in self.date_columns],
-            integer_columns=[_normalize_header(col) for col in self.integer_columns],
-            float_columns=[_normalize_header(col) for col in self.float_columns],
-            boolean_columns=[_normalize_header(col) for col in self.boolean_columns],
-            dedupe_on=[_normalize_header(col) for col in self.dedupe_on],
-            fill_defaults={_normalize_header(k): v for k, v in self.fill_defaults.items()},
+            required_columns=[normalize_header(col) for col in self.required_columns],
+            date_columns=[normalize_header(col) for col in self.date_columns],
+            integer_columns=[normalize_header(col) for col in self.integer_columns],
+            float_columns=[normalize_header(col) for col in self.float_columns],
+            boolean_columns=[normalize_header(col) for col in self.boolean_columns],
+            dedupe_on=[normalize_header(col) for col in self.dedupe_on],
+            fill_defaults={normalize_header(k): v for k, v in self.fill_defaults.items()},
         )
 
 
@@ -407,7 +388,7 @@ class CrashDataRefiner:
 
         for raw_row in rows:
             row = self._normalize_row(raw_row) if normalize_headers else dict(raw_row)
-            if _is_blank_row(row):
+            if is_blank_row(row):
                 continue
             total_rows += 1
 
@@ -504,8 +485,8 @@ class CrashDataRefiner:
         longitude_column: str,
         normalize_headers: bool = True,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], BoundaryFilterReport]:
-        lat_column = _normalize_header(latitude_column)
-        lon_column = _normalize_header(longitude_column)
+        lat_column = normalize_header(latitude_column)
+        lon_column = normalize_header(longitude_column)
 
         included: List[Dict[str, Any]] = []
         excluded: List[Dict[str, Any]] = []
@@ -514,7 +495,7 @@ class CrashDataRefiner:
 
         for raw_row in rows:
             row = self._normalize_row(raw_row) if normalize_headers else dict(raw_row)
-            if _is_blank_row(row):
+            if is_blank_row(row):
                 continue
             total_rows += 1
 
@@ -559,7 +540,7 @@ class CrashDataRefiner:
     def _normalize_row(self, row: Mapping[str, Any]) -> Dict[str, Any]:
         normalized: Dict[str, Any] = {}
         for key, value in row.items():
-            normalized[_normalize_header(key)] = value
+            normalized[normalize_header(key)] = value
         return normalized
 
     def _has_required_columns(self, row: Mapping[str, Any]) -> bool:
@@ -570,33 +551,9 @@ class CrashDataRefiner:
         return True
 
     def refine_file(self, input_path: str, output_path: str) -> RefinementReport:
-        rows = list(self._read_csv(input_path))
-        refined_rows, report = self.refine_rows(rows)
-        self._write_csv(output_path, refined_rows)
+        from .spreadsheets import read_spreadsheet, write_spreadsheet
+
+        data = read_spreadsheet(input_path)
+        refined_rows, report = self.refine_rows(data.rows)
+        write_spreadsheet(output_path, refined_rows)
         return report
-
-    def _read_csv(self, path: str) -> Iterator[Dict[str, Any]]:
-        import csv
-
-        with open(path, "r", newline="", encoding="utf-8-sig") as handle:
-            reader = csv.DictReader(handle)
-            for row in reader:
-                yield row
-
-    def _write_csv(self, path: str, rows: Sequence[Mapping[str, Any]]) -> None:
-        import csv
-
-        if not rows:
-            with open(path, "w", newline="", encoding="utf-8") as handle:
-                handle.write("")
-            return
-
-        header_set = set()
-        for row in rows:
-            header_set.update(row.keys())
-        headers = sorted(header_set)
-        with open(path, "w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(handle, fieldnames=headers)
-            writer.writeheader()
-            for row in rows:
-                writer.writerow({header: row.get(header) for header in headers})

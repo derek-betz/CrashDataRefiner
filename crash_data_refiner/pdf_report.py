@@ -20,7 +20,7 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfgen import canvas
 
 from .geo import parse_coordinate
-from .refiner import _normalize_header
+from .normalize import normalize_header
 
 
 DEFAULT_TILE_URL = "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
@@ -373,8 +373,8 @@ class CrashReportPDFBuilder:
         canvas_obj = canvas.Canvas(str(pdf_path), pagesize=self.config.page_size)
         width, height = self.config.page_size
         for index, row in enumerate(rows, start=1):
-            lat = parse_coordinate(row.get(_normalize_header(latitude_column)))
-            lon = parse_coordinate(row.get(_normalize_header(longitude_column)))
+            lat = parse_coordinate(row.get(normalize_header(latitude_column)))
+            lon = parse_coordinate(row.get(normalize_header(longitude_column)))
             kmz_label = _format_kmz_label(row.get("kmz_label"))
             map_image = self.renderer.render(
                 lat,
@@ -1136,7 +1136,7 @@ class CrashReportPDFBuilder:
 
 
 def _normalize_row(row: Mapping[str, Any]) -> dict[str, Any]:
-    return {_normalize_header(key): value for key, value in row.items()}
+    return {normalize_header(key): value for key, value in row.items()}
 
 
 def _human_label(key: str) -> str:

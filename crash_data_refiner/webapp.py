@@ -11,10 +11,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from flask import Flask, abort, jsonify, request, send_from_directory
 from werkzeug.utils import secure_filename
 
-from .geo import BoundaryFilterReport, load_kmz_polygon, parse_coordinate, point_in_polygon
+from .geo import BoundaryFilterReport, load_kmz_polygon, parse_coordinate
 from .map_report import write_map_report
 from .normalize import guess_lat_lon_columns, normalize_header
-from .refiner import RefinementReport
+from .refiner import CrashDataRefiner, RefinementReport
 from .services import (
     pdf_output_path,
     refined_output_path,
@@ -141,10 +141,6 @@ def _list_outputs(output_dir: Path) -> List[Dict[str, Any]]:
     return items
 
 
-def _guess_lat_lon(headers: List[str]) -> Tuple[Optional[str], Optional[str]]:
-    return guess_lat_lon_columns(headers)
-
-
 def _build_preview_points(
     rows: List[Dict[str, Any]],
     *,
@@ -152,25 +148,22 @@ def _build_preview_points(
     lon_column: str,
     boundary: Any,
 ) -> Tuple[List[Tuple[float, float]], int, int, int]:
+    refiner = CrashDataRefiner()
+    included_rows, _excluded_rows, _invalid_rows, report = refiner.filter_rows_by_boundary(
+        rows,
+        boundary=boundary,
+        latitude_column=lat_column,
+        longitude_column=lon_column,
+    )
     lat_key = normalize_header(lat_column)
     lon_key = normalize_header(lon_column)
     points: List[Tuple[float, float]] = []
-    included = 0
-    excluded = 0
-    invalid = 0
-    for row in rows:
-        normalized_row = {normalize_header(key): value for key, value in row.items()}
-        lat = parse_coordinate(normalized_row.get(lat_key))
-        lon = parse_coordinate(normalized_row.get(lon_key))
-        if lat is None or lon is None:
-            invalid += 1
-            continue
-        if point_in_polygon(lon, lat, boundary):
-            included += 1
+    for row in included_rows:
+        lat = parse_coordinate(row.get(lat_key))
+        lon = parse_coordinate(row.get(lon_key))
+        if lat is not None and lon is not None:
             points.append((lat, lon))
-        else:
-            excluded += 1
-    return points, included, excluded, invalid
+    return points, report.included_rows, report.excluded_rows, report.invalid_rows
 
 
 def _create_state() -> RunState:
@@ -289,7 +282,7 @@ def preview_headers() -> Any:
     try:
         upload.save(temp_path)
         headers = read_spreadsheet_headers(str(temp_path))
-        lat_guess, lon_guess = _guess_lat_lon(headers)
+        lat_guess, lon_guess = guess_lat_lon_columns(headers)
         return jsonify({
             "headers": headers,
             "latGuess": lat_guess,
@@ -338,7 +331,7 @@ def preview_map() -> Any:
         kmz_upload.save(kmz_path)
         data = read_spreadsheet(str(data_path))
         if not lat_column or not lon_column:
-            lat_guess, lon_guess = _guess_lat_lon(data.headers)
+            lat_guess, lon_guess = guess_lat_lon_columns(data.headers)
             if not lat_column and lat_guess:
                 lat_column = lat_guess
             if not lon_column and lon_guess:
@@ -437,7 +430,7 @@ def start_run() -> Any:
         except Exception as exc:
             _discard_state(state.run_id)
             return jsonify({"error": f"Unable to read headers: {exc}"}), 400
-        lat_guess, lon_guess = _guess_lat_lon(headers)
+        lat_guess, lon_guess = guess_lat_lon_columns(headers)
         if not lat_column and lat_guess:
             lat_column = lat_guess
         if not lon_column and lon_guess:
@@ -541,7 +534,7 @@ def start_report() -> Any:
 
         if not lat_column or not lon_column:
             headers = read_spreadsheet_headers(str(source_path))
-            lat_guess, lon_guess = _guess_lat_lon(headers)
+            lat_guess, lon_guess = guess_lat_lon_columns(headers)
             if not lat_column and lat_guess:
                 lat_column = lat_guess
             if not lon_column and lon_guess:
