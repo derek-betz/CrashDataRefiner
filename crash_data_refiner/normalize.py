@@ -6,7 +6,26 @@ surface that needs to interpret crash data column names in a consistent way.
 from __future__ import annotations
 
 import re
-from typing import List, Optional, Tuple
+from typing import Any, List, Mapping, Optional, Tuple
+
+
+def is_blank_value(value: Any) -> bool:
+    """Return ``True`` if *value* is ``None``, an empty/whitespace-only string, or a
+    sequence whose every element is blank."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple)):
+        return all(is_blank_value(item) for item in value)
+    return False
+
+
+def is_blank_row(row: Mapping[str, Any]) -> bool:
+    """Return ``True`` if every value in *row* is blank (or the row is empty)."""
+    if not row:
+        return True
+    return all(is_blank_value(value) for value in row.values())
 
 
 def normalize_header(header: str) -> str:

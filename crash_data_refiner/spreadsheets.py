@@ -7,6 +7,8 @@ from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
 import csv
 
+from .normalize import is_blank_row, is_blank_value
+
 
 @dataclass
 class SpreadsheetData:
@@ -153,16 +155,8 @@ def _resolve_headers(rows: Sequence[Mapping[str, Any]], headers: Sequence[str] |
 
 
 def _is_blank_row(row: Mapping[str, Any]) -> bool:
-    if not row:
-        return True
-    return all(_is_blank_value(value) for value in row.values())
+    return is_blank_row(row)
 
 
 def _is_blank_value(value: Any) -> bool:
-    if value is None:
-        return True
-    if isinstance(value, str):
-        return not value.strip()
-    if isinstance(value, (list, tuple)):
-        return all(_is_blank_value(item) for item in value)
-    return False
+    return is_blank_value(value)

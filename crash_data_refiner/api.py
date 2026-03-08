@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import tempfile
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +22,14 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="CrashDataRefiner API", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    register_agent()
+    yield
+
+
+app = FastAPI(title="CrashDataRefiner API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -34,11 +42,6 @@ app.add_middleware(
 class HealthResponse(BaseModel):
     status: str
     version: str
-
-
-@app.on_event("startup")
-def on_startup() -> None:
-    register_agent()
 
 
 @app.get("/health", response_model=HealthResponse)
