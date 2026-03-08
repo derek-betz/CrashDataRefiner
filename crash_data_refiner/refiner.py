@@ -12,7 +12,7 @@ import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from .geo import BoundaryFilterReport, PolygonBoundary, parse_coordinate, point_in_polygon
-from .normalize import is_blank_row, is_blank_value, normalize_header
+from .normalize import is_blank_row, normalize_header
 
 
 _DATE_FORMATS: Sequence[str] = (
@@ -79,14 +79,6 @@ def _coerce_boolean(value: str) -> Optional[bool]:
     if text in {"false", "f", "0", "no", "n"}:
         return False
     return None
-
-
-def _is_blank_value(value: Any) -> bool:
-    return is_blank_value(value)
-
-
-def _is_blank_row(row: Mapping[str, Any]) -> bool:
-    return is_blank_row(row)
 
 
 _CRASH_TYPE_COLUMNS = {
@@ -396,7 +388,7 @@ class CrashDataRefiner:
 
         for raw_row in rows:
             row = self._normalize_row(raw_row) if normalize_headers else dict(raw_row)
-            if _is_blank_row(row):
+            if is_blank_row(row):
                 continue
             total_rows += 1
 
@@ -503,7 +495,7 @@ class CrashDataRefiner:
 
         for raw_row in rows:
             row = self._normalize_row(raw_row) if normalize_headers else dict(raw_row)
-            if _is_blank_row(row):
+            if is_blank_row(row):
                 continue
             total_rows += 1
 
