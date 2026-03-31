@@ -36,3 +36,8 @@ crash_data_refiner = ["web/**"]
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["crash_data_refiner*"]
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    "error::DeprecationWarning:crash_data_refiner",
+]

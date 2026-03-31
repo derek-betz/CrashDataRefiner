@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Mapping, Sequence
 
 import csv
 
-from .normalize import is_blank_row
+from .normalize import guess_lat_lon_columns, is_blank_row
 
 
 @dataclass
@@ -35,11 +35,8 @@ def read_spreadsheet_headers(path: str) -> List[str]:
         from openpyxl import load_workbook
 
         workbook = load_workbook(path, read_only=True, data_only=True)
-        sheet = workbook.active
-        row = next(sheet.iter_rows(values_only=True), None)
-        if not row:
-            return []
-        return [str(item).strip() if item is not None else "" for item in row]
+        sheet = _select_sheet(workbook)
+        return _sheet_headers(sheet)
     raise ValueError(f"Unsupported file type: {ext}")
 
 
@@ -75,10 +72,10 @@ def _read_xlsx(path: str) -> SpreadsheetData:
     from openpyxl import load_workbook
 
     workbook = load_workbook(path, read_only=True, data_only=True)
-    sheet = workbook.active
+    sheet = _select_sheet(workbook)
     rows_iter = sheet.iter_rows(values_only=True)
-    header_row = next(rows_iter, None)
-    headers = [str(item).strip() if item is not None else "" for item in (header_row or [])]
+    headers = _sheet_headers(sheet)
+    next(rows_iter, None)
     rows: List[Dict[str, Any]] = []
     for row in rows_iter:
         if row is None:
@@ -92,6 +89,37 @@ def _read_xlsx(path: str) -> SpreadsheetData:
         if row_dict and not is_blank_row(row_dict):
             rows.append(row_dict)
     return SpreadsheetData(headers=headers, rows=rows)
+
+
+def _select_sheet(workbook: Any) -> Any:
+    best_sheet = workbook.active
+    best_score = (-1, -1)
+    for sheet in workbook.worksheets:
+        headers = _sheet_headers(sheet)
+        nonblank_count = sum(1 for header in headers if header)
+        if nonblank_count <= 0:
+            continue
+        lat_guess, lon_guess = guess_lat_lon_columns(headers)
+        crash_like = any(
+            token in header.lower()
+            for header in headers
+            for token in ("crash", "collision", "road", "county", "city", "latitude", "longitude")
+        )
+        score = (
+            (1 if lat_guess and lon_guess else 0) + (1 if crash_like else 0),
+            nonblank_count,
+        )
+        if score > best_score:
+            best_sheet = sheet
+            best_score = score
+    return best_sheet
+
+
+def _sheet_headers(sheet: Any) -> List[str]:
+    row = next(sheet.iter_rows(values_only=True), None)
+    if not row:
+        return []
+    return [str(item).strip() if item is not None else "" for item in row]
 
 
 def _write_xlsx(path: str, rows: Sequence[Mapping[str, Any]], headers: Sequence[str] | None = None) -> None:

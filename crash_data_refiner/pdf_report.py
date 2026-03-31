@@ -1,6 +1,7 @@
 """Generate polished PDF crash reports with aerial imagery and bullet summaries."""
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from io import BytesIO
@@ -8,7 +9,7 @@ import math
 from pathlib import Path
 import re
 import textwrap
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import requests
 from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -162,10 +163,12 @@ class CrashReportConfig:
     body_font: str = "Helvetica"
     header_size: int = 19
     label_size: int = 13
-    map_zoom: int = 17
-    map_zoom_factor: float = 5.0
-    map_width_px: int = 1500
-    map_height_px: int = 950
+    map_zoom: int = 16
+    map_zoom_factor: float = 1.0
+    map_width_px: int = 520
+    map_height_px: int = 1000
+    tile_timeout: float = 3.0
+    tile_cache_size: int = 256
     bullet_leading: float = 16.4
     max_bullets: int = 12
     max_value_chars: int = 120
@@ -173,6 +176,9 @@ class CrashReportConfig:
     narrative_min_size: int = 9
     narrative_leading: float = 14.8
     narrative_gap: float = 7.0
+
+
+ProgressCallback = Callable[[int, int], None]
 
 
 class AerialTileRenderer:
@@ -184,11 +190,14 @@ class AerialTileRenderer:
         *,
         overlay_urls: Sequence[str] | None = None,
         timeout: float = 8.0,
+        cache_size: int = 256,
     ) -> None:
         self.tile_url = tile_url
-        self.overlay_urls = overlay_urls or [DEFAULT_ROADS_TILE_URL, DEFAULT_LABELS_TILE_URL]
+        self.overlay_urls = [DEFAULT_ROADS_TILE_URL] if overlay_urls is None else list(overlay_urls)
         self.timeout = timeout
+        self.cache_size = max(0, cache_size)
         self._session = requests.Session()
+        self._tile_cache: OrderedDict[tuple[int, int, int], Image.Image] = OrderedDict()
 
     def render(
         self,
@@ -252,11 +261,24 @@ class AerialTileRenderer:
         return render_zoom, render_width, render_height
 
     def _fetch_tile(self, x: int, y: int, z: int) -> Image.Image:
+        cache_key = (x, y, z)
+        cached_tile = self._tile_cache.get(cache_key)
+        if cached_tile is not None:
+            self._tile_cache.move_to_end(cache_key)
+            return cached_tile
+
         base_image = self._fetch_tile_layer(self.tile_url, x, y, z, convert_mode="RGBA")
         for overlay_url in self.overlay_urls:
             overlay = self._fetch_tile_layer(overlay_url, x, y, z, convert_mode="RGBA")
             base_image = Image.alpha_composite(base_image, overlay)
-        return base_image
+
+        composed_tile = base_image.convert("RGB")
+        if self.cache_size:
+            self._tile_cache[cache_key] = composed_tile
+            self._tile_cache.move_to_end(cache_key)
+            while len(self._tile_cache) > self.cache_size:
+                self._tile_cache.popitem(last=False)
+        return composed_tile
 
     def _fetch_tile_layer(self, url_template: str, x: int, y: int, z: int, *, convert_mode: str) -> Image.Image:
         url = url_template.format(x=x, y=y, z=z)
@@ -345,6 +367,7 @@ def generate_pdf_report(
     latitude_column: str,
     longitude_column: str,
     config: CrashReportConfig | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> Path:
     pdf_path = Path(path)
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
@@ -354,14 +377,23 @@ def generate_pdf_report(
 
     normalized_rows = [_normalize_row(row) for row in rows]
     builder = CrashReportPDFBuilder(config or CrashReportConfig())
-    builder.render(pdf_path, normalized_rows, latitude_column, longitude_column)
+    builder.render(
+        pdf_path,
+        normalized_rows,
+        latitude_column,
+        longitude_column,
+        progress_callback=progress_callback,
+    )
     return pdf_path
 
 
 class CrashReportPDFBuilder:
     def __init__(self, config: CrashReportConfig) -> None:
         self.config = config
-        self.renderer = AerialTileRenderer()
+        self.renderer = AerialTileRenderer(
+            timeout=config.tile_timeout,
+            cache_size=config.tile_cache_size,
+        )
 
     def render(
         self,
@@ -369,9 +401,14 @@ class CrashReportPDFBuilder:
         rows: Sequence[Mapping[str, Any]],
         latitude_column: str,
         longitude_column: str,
+        *,
+        progress_callback: ProgressCallback | None = None,
     ) -> None:
         canvas_obj = canvas.Canvas(str(pdf_path), pagesize=self.config.page_size)
         width, height = self.config.page_size
+        total_rows = len(rows)
+        if progress_callback is not None:
+            progress_callback(0, total_rows)
         for index, row in enumerate(rows, start=1):
             lat = parse_coordinate(row.get(normalize_header(latitude_column)))
             lon = parse_coordinate(row.get(normalize_header(longitude_column)))
@@ -386,8 +423,10 @@ class CrashReportPDFBuilder:
                 kmz_label=kmz_label,
             )
             decorated_map = self._decorate_map(map_image, lat, lon, self.config.map_zoom)
-            self._render_page(canvas_obj, width, height, row, decorated_map, lat, lon, index, len(rows))
+            self._render_page(canvas_obj, width, height, row, decorated_map, lat, lon, index, total_rows)
             canvas_obj.showPage()
+            if progress_callback is not None:
+                progress_callback(index, total_rows)
         canvas_obj.save()
 
     def _render_page(

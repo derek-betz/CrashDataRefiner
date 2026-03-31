@@ -14,6 +14,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from crash_data_refiner.agent_hub import fetch_knowledge, publish_knowledge, register_agent
+from crash_data_refiner.coordinate_recovery import (
+    load_coordinate_review_decisions,
+    recover_missing_coordinates,
+)
 from crash_data_refiner.geo import load_kmz_polygon
 from crash_data_refiner.refiner import CrashDataRefiner
 from crash_data_refiner.spreadsheets import read_spreadsheet
@@ -83,6 +87,7 @@ def agent_query(
 async def refine(
     data_file: UploadFile = File(...),
     boundary_file: UploadFile | None = File(None),
+    coordinate_review_file: UploadFile | None = File(None),
     lat_column: str | None = Form(None),
     lon_column: str | None = Form(None),
     sample_limit: int = Form(10),
@@ -100,6 +105,21 @@ async def refine(
 
         data = read_spreadsheet(str(data_path))
         refiner = CrashDataRefiner()
+        review_decisions = None
+        recovery_report = None
+        review_rows = []
+
+        if coordinate_review_file and coordinate_review_file.filename:
+            review_suffix = Path(coordinate_review_file.filename).suffix.lower()
+            if review_suffix not in {".csv", ".xlsx", ".xlsm"}:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Coordinate review file must be CSV or Excel.",
+                )
+            review_path = Path(temp_dir) / coordinate_review_file.filename
+            review_path.write_bytes(await coordinate_review_file.read())
+            review_data = read_spreadsheet(str(review_path))
+            review_decisions = load_coordinate_review_decisions(review_data.rows)
 
         if boundary_file:
             if not boundary_file.filename:
@@ -114,14 +134,35 @@ async def refine(
             boundary_path = Path(temp_dir) / boundary_file.filename
             boundary_path.write_bytes(await boundary_file.read())
             boundary = load_kmz_polygon(str(boundary_path))
-            refined_rows, report, boundary_report, invalid_rows = refiner.refine_rows_with_boundary(
+            prepared_rows, review_rows, recovery_report = recover_missing_coordinates(
                 data.rows,
+                latitude_column=lat_column,
+                longitude_column=lon_column,
+                boundary=boundary,
+                review_decisions=review_decisions,
+            )
+            refined_rows, report, boundary_report, invalid_rows = refiner.refine_rows_with_boundary(
+                prepared_rows,
                 boundary=boundary,
                 latitude_column=lat_column,
                 longitude_column=lon_column,
             )
         else:
-            refined_rows, report = refiner.refine_rows(data.rows)
+            if review_decisions is not None:
+                if not lat_column or not lon_column:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="lat_column and lon_column are required with coordinate_review_file.",
+                    )
+                prepared_rows, review_rows, recovery_report = recover_missing_coordinates(
+                    data.rows,
+                    latitude_column=lat_column,
+                    longitude_column=lon_column,
+                    review_decisions=review_decisions,
+                )
+            else:
+                prepared_rows = data.rows
+            refined_rows, report = refiner.refine_rows(prepared_rows)
             boundary_report = None
             invalid_rows = []
 
@@ -139,6 +180,8 @@ async def refine(
             },
             "boundary": boundary_report.__dict__ if boundary_report else None,
             "invalid_rows": len(invalid_rows),
+            "coordinate_review_rows": len(review_rows),
+            "recovery": recovery_report.__dict__ if recovery_report else None,
             "sample_rows": sample_rows,
         }
         return payload

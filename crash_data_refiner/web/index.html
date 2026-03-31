@@ -4,6 +4,12 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Crash Data Refiner</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
     <link rel="stylesheet" href="app.css" />
   </head>
   <body>
@@ -83,6 +89,20 @@
             <div class="actions inline">
               <button class="btn secondary small" id="generate-report" disabled>Generate PDF Crash Report</button>
             </div>
+            <label class="field-label">Reviewed Coordinate Workbook</label>
+            <div class="drop-zone compact" id="review-drop">
+              <div class="drop-icon">
+                <svg viewBox="0 0 64 48" aria-hidden="true">
+                  <path d="M8 10a6 6 0 0 1 6-6h20l6 6h16a6 6 0 0 1 6 6v18a6 6 0 0 1-6 6H8a6 6 0 0 1-6-6V10z" />
+                </svg>
+              </div>
+              <div class="drop-title" id="review-label">Drop reviewed Coordinate Recovery workbook</div>
+              <div class="drop-subtitle" id="review-hint">Download, fill approved coordinates, then upload it here.</div>
+              <input id="review-input" type="file" accept=".csv,.xlsx,.xlsm" />
+            </div>
+            <div class="actions inline">
+              <button class="btn secondary small" id="apply-review" disabled>Apply Coordinate Decisions</button>
+            </div>
             <div class="progress report-progress" id="report-progress">
               <div class="progress-bar"></div>
             </div>
@@ -120,15 +140,48 @@
         <section class="content">
           <div class="left-col">
             <div class="card" style="--delay: 0.3s">
-              <div class="card-title">Map Preview</div>
+              <div class="card-header">
+                <div>
+                  <div class="card-title">Map Preview</div>
+                  <div class="card-subtitle" id="map-subtitle">
+                    Project map preview and crash placement canvas.
+                  </div>
+                </div>
+                <div class="map-mode" id="map-mode">Project Map</div>
+              </div>
               <div class="map-frame">
+                <div class="wizard-map" id="wizard-map" hidden></div>
                 <iframe title="Map report preview" id="map-frame"></iframe>
                 <div class="map-placeholder" id="map-placeholder">
                   Map preview appears after crash data and boundary files are loaded.
                 </div>
               </div>
+              <div class="wizard-map-toolbar" id="wizard-map-toolbar" hidden>
+                <div class="wizard-map-selection" id="wizard-map-selection">
+                  Pick a likely crash from the review wizard to activate map placement.
+                </div>
+                <button class="btn secondary small" id="clear-map-selection" disabled>Clear Pick</button>
+              </div>
               <div class="actions inline">
-                <button class="btn secondary small" id="open-map" disabled>Open Map Preview</button>
+                <button class="btn secondary small" id="open-map" disabled>Open Project Map Preview</button>
+              </div>
+            </div>
+
+            <div class="card review-card" style="--delay: 0.33s">
+              <div class="card-header">
+                <div>
+                  <div class="card-title">Coordinate Review Wizard</div>
+                  <div class="card-subtitle" id="review-queue-subtitle">
+                    Step through likely unplaced crashes one at a time.
+                  </div>
+                </div>
+                <button class="btn secondary small" id="apply-browser-review" disabled>Apply Reviewed Crashes</button>
+              </div>
+              <div class="review-summary" id="review-summary">
+                No likely crash-review items loaded yet.
+              </div>
+              <div class="review-list empty" id="review-list">
+                Run refinement to populate the crash placement wizard.
               </div>
             </div>
           </div>
@@ -141,9 +194,9 @@
                 <div class="summary-value" id="summary-data">No file selected.</div>
                 <div class="summary-label">KMZ boundary</div>
                 <div class="summary-value" id="summary-kmz">No boundary selected.</div>
-              <div class="summary-label">Columns</div>
-              <div class="summary-value" id="summary-columns">Latitude / Longitude not set.</div>
-            </div>
+                <div class="summary-label">Columns</div>
+                <div class="summary-value" id="summary-columns">Latitude / Longitude not set.</div>
+              </div>
               <div class="actions">
                 <button class="btn primary" id="run-refine" disabled>Run Refinement</button>
                 <button class="btn secondary" id="clear-session">Clear Session</button>
@@ -197,13 +250,16 @@
           <li>Drop the crash data CSV or Excel file into Project Inputs.</li>
           <li>Drop the KMZ boundary (single polygon required).</li>
           <li>Confirm latitude and longitude columns are correct.</li>
-          <li>Toggle PDF generation if needed and add an alternate report file.</li>
           <li>Run refinement and track progress in the Run Log.</li>
+          <li>Review likely unplaced crashes in the browser wizard, or use the Coordinate Recovery workbook if you prefer spreadsheet review.</li>
+          <li>Generate a PDF report if needed.</li>
         </ol>
         <h3>Outputs produced</h3>
         <ul>
           <li>Refined crash data file inside the KMZ boundary.</li>
           <li>Crashes Without Valid Lat-Long Data extract.</li>
+          <li>Coordinate Recovery Review extract for rows that still need location work.</li>
+          <li>Rejected Coordinate Review extract for crashes you explicitly keep out.</li>
           <li>KMZ crash report for Google Earth previews.</li>
           <li>Map preview in the browser and optional full PDF report.</li>
         </ul>
@@ -217,12 +273,21 @@
       </div>
       <div class="modal-body">
         <p>Each run writes outputs into a dedicated folder under outputs/web_runs.</p>
+        <p>Rows auto-filled by the coordinate recovery pass are tagged in the refined output.</p>
+        <p>The browser review wizard lets you confirm, manually place, or reject likely crashes without downloading the workbook.</p>
+        <p>Rejected crashes are written to a separate Rejected Coordinate Review output instead of staying in the refined data.</p>
+        <p>Approved coordinate review workbooks rerun the pipeline against the original crash data and KMZ from the selected source run.</p>
         <p>The map report uses Leaflet tiles and needs network access to load the basemap.</p>
         <p>PDF reports are generated from refined data unless a separate PDF data file is supplied.</p>
       </div>
     </dialog>
 
     <div class="toast" id="toast"></div>
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
     <script src="app.js"></script>
   </body>
 </html>

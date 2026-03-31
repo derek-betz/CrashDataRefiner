@@ -273,7 +273,7 @@ class SummaryReportPDFBuilder:
         canvas_obj.drawString(title_x, title_y - 18, subtitle)
 
         right_x = x + width - 16
-        now_text = datetime.now().strftime("%Y-%m-%d %H:%M")
+        now_text = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
         canvas_obj.setFillColor(MUTED)
         canvas_obj.setFont(self.config.body_font, 9)
         canvas_obj.drawRightString(right_x, title_y, f"Generated: {now_text}")

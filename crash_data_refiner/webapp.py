@@ -1,21 +1,30 @@
 from __future__ import annotations
 
+import json
+import shutil
 import threading
 import tempfile
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from flask import Flask, abort, jsonify, request, send_from_directory
 from werkzeug.utils import secure_filename
 
+from .coordinate_recovery import (
+    CoordinateReviewDecision,
+    CoordinateRecoveryReport,
+    build_coordinate_review_queue,
+    build_coordinate_review_wizard_steps,
+)
 from .geo import BoundaryFilterReport, load_kmz_polygon, parse_coordinate
 from .map_report import write_map_report
 from .normalize import guess_lat_lon_columns, normalize_header
 from .refiner import CrashDataRefiner, RefinementReport
 from .services import (
+    coordinate_review_output_path,
     pdf_output_path,
     refined_output_path,
     run_pdf_report,
@@ -59,7 +68,7 @@ class RunState:
         lines = [line for line in text.splitlines() if line.strip()]
         if not lines:
             return
-        now = datetime.utcnow().isoformat()
+        now = _utcnow().isoformat()
         with self.lock:
             for line in lines:
                 self.log_seq += 1
@@ -107,6 +116,10 @@ RUNS_LOCK = threading.Lock()
 
 def _new_id() -> str:
     return uuid.uuid4().hex
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _format_duration(start: Optional[datetime], end: Optional[datetime]) -> str:
@@ -168,7 +181,7 @@ def _build_preview_points(
 
 def _create_state() -> RunState:
     run_id = _new_id()
-    state = RunState(run_id=run_id, created_at=datetime.utcnow())
+    state = RunState(run_id=run_id, created_at=_utcnow())
     with RUNS_LOCK:
         RUNS[run_id] = state
     return state
@@ -200,11 +213,173 @@ def _save_upload(file_obj: Any, *, dest_dir: Path, allowed_exts: Tuple[str, ...]
     return path
 
 
+def _copy_input_file(source: Path, *, dest_dir: Path, label: str) -> Path:
+    if not source.exists():
+        raise ValueError(f"{label} was not found.")
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    target = dest_dir / source.name
+    shutil.copy2(source, target)
+    return target
+
+
+def _resolve_coordinate_review_path(state: RunState) -> Optional[Path]:
+    if not state.output_dir:
+        return None
+    data_name = str((state.inputs or {}).get("dataFile") or "").strip()
+    if not data_name:
+        return None
+    output_path = refined_output_path(state.output_dir, data_name)
+    review_path = coordinate_review_output_path(output_path)
+    if review_path.exists():
+        return review_path
+    return None
+
+
+def _load_review_queue_for_state(state: RunState) -> List[Dict[str, Any]]:
+    review_path = _resolve_coordinate_review_path(state)
+    if review_path is None:
+        return []
+    data = read_spreadsheet(str(review_path))
+    return build_coordinate_review_queue(data.rows)
+
+
+def _polygon_to_leaflet(polygon: Any) -> List[List[List[float]]]:
+    outer = [[lat, lon] for lon, lat in polygon.outer]
+    holes = [[[lat, lon] for lon, lat in ring] for ring in polygon.holes]
+    if holes:
+        return [outer, *holes]
+    return [outer]
+
+
+def _load_review_map_data_for_state(state: RunState) -> Optional[Dict[str, Any]]:
+    if not state.output_dir:
+        return None
+
+    inputs = dict(state.inputs or {})
+    data_name = str(inputs.get("dataFile") or "").strip()
+    kmz_name = str(inputs.get("kmzFile") or "").strip()
+    lat_column = str(inputs.get("latColumn") or "").strip()
+    lon_column = str(inputs.get("lonColumn") or "").strip()
+    if not data_name or not kmz_name or not lat_column or not lon_column:
+        return None
+
+    input_dir = state.output_dir / "inputs"
+    kmz_path = input_dir / kmz_name
+    refined_path = refined_output_path(state.output_dir, data_name)
+    if not kmz_path.exists() or not refined_path.exists():
+        return None
+
+    boundary = load_kmz_polygon(str(kmz_path))
+    refined_data = read_spreadsheet(str(refined_path))
+    lat_key = normalize_header(lat_column)
+    lon_key = normalize_header(lon_column)
+    points: List[List[float]] = []
+    for row in refined_data.rows:
+        lat = parse_coordinate(row.get(lat_key))
+        lon = parse_coordinate(row.get(lon_key))
+        if lat is None or lon is None:
+            continue
+        points.append([lat, lon])
+
+    return {
+        "polygon": _polygon_to_leaflet(boundary),
+        "points": points,
+        "pointCount": len(points),
+    }
+
+
+def _load_review_wizard_for_state(state: RunState) -> Dict[str, Any]:
+    review_path = _resolve_coordinate_review_path(state)
+    if review_path is None:
+        return {
+            "primarySteps": [],
+            "secondarySteps": [],
+            "mapData": None,
+        }
+
+    data = read_spreadsheet(str(review_path))
+    steps = build_coordinate_review_wizard_steps(data.rows)
+    primary_steps = [
+        step for step in steps
+        if str(step.get("reviewBucket") or "primary") != "secondary"
+    ]
+    secondary_steps = [
+        step for step in steps
+        if str(step.get("reviewBucket") or "primary") == "secondary"
+    ]
+    return {
+        "primarySteps": primary_steps,
+        "secondarySteps": secondary_steps,
+        "mapData": _load_review_map_data_for_state(state),
+    }
+
+
+def _parse_review_decisions_payload(text: str) -> Dict[str, CoordinateReviewDecision]:
+    if not text.strip():
+        return {}
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Review decisions must be valid JSON.") from exc
+
+    if not isinstance(payload, list):
+        raise ValueError("Review decisions must be a JSON array.")
+
+    decisions: Dict[str, CoordinateReviewDecision] = {}
+    for index, item in enumerate(payload, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"Review decision #{index} must be an object.")
+        group_key = str(item.get("rowKey") or item.get("groupKey") or "").strip()
+        action = str(item.get("action") or "apply").strip().lower()
+        latitude = parse_coordinate(item.get("latitude"))
+        longitude = parse_coordinate(item.get("longitude"))
+        note = str(item.get("note") or "").strip()
+        if not group_key:
+            raise ValueError(
+                f"Review decision #{index} must include rowKey or groupKey."
+            )
+        if action not in {"apply", "reject"}:
+            raise ValueError(f"Review decision #{index} action must be 'apply' or 'reject'.")
+        if action == "apply" and (latitude is None or longitude is None):
+            raise ValueError(
+                f"Review decision #{index} must include latitude and longitude for applied placements."
+            )
+        existing = decisions.get(group_key)
+        if existing and (
+            existing.action != action
+            or (
+                action == "apply"
+                and (
+                    existing.latitude is None
+                    or existing.longitude is None
+                    or latitude is None
+                    or longitude is None
+                    or abs(existing.latitude - latitude) > 1e-6
+                    or abs(existing.longitude - longitude) > 1e-6
+                )
+            )
+        ):
+            raise ValueError(f"Review group '{group_key}' contains conflicting browser decisions.")
+        decisions[group_key] = CoordinateReviewDecision(
+            group_key=group_key,
+            latitude=latitude,
+            longitude=longitude,
+            action=action,
+            note=note or (
+                "Rejected in browser review wizard."
+                if action == "reject"
+                else "Applied from browser review wizard."
+            ),
+        )
+    return decisions
+
+
 def _build_summary(
     *,
     state: RunState,
     report: RefinementReport,
     boundary_report: BoundaryFilterReport,
+    recovery_report: CoordinateRecoveryReport,
     kmz_count: Optional[int],
 ) -> Dict[str, Any]:
     metrics = [
@@ -234,6 +409,53 @@ def _build_summary(
             "detail": "Rows written",
         },
     ]
+    if recovery_report.missing_rows:
+        auto_recovered = max(recovery_report.recovered_rows - recovery_report.approved_rows, 0)
+        metrics.extend(
+            [
+                {
+                    "label": "Recovered Coords",
+                    "value": str(recovery_report.recovered_rows),
+                    "detail": "Auto-filled plus approved review decisions",
+                },
+                {
+                    "label": "Review Needed",
+                    "value": str(recovery_report.review_rows),
+                    "detail": "Rows written to coordinate review output",
+                },
+                {
+                    "label": "Rejected Review",
+                    "value": str(recovery_report.rejected_rows),
+                    "detail": "Rows kept out of the refined data by explicit review rejection",
+                },
+                {
+                    "label": "Primary Review",
+                    "value": str(recovery_report.primary_review_rows),
+                    "detail": "Likely in-project review rows",
+                },
+                {
+                    "label": "Secondary Bucket",
+                    "value": str(recovery_report.secondary_review_rows),
+                    "detail": "Lower-likelihood rows kept out of the main queue",
+                },
+            ]
+        )
+        if auto_recovered:
+            metrics.append(
+                {
+                    "label": "Auto Recovered",
+                    "value": str(auto_recovered),
+                    "detail": "Rows filled without manual review",
+                }
+            )
+        if recovery_report.approved_rows:
+            metrics.append(
+                {
+                    "label": "Review Applied",
+                    "value": str(recovery_report.approved_rows),
+                    "detail": "Rows filled from approved workbook decisions",
+                }
+            )
     if kmz_count is not None:
         metrics.append({
             "label": "KMZ Placemarks",
@@ -441,6 +663,7 @@ def start_run() -> Any:
         return jsonify({"error": "Latitude and longitude columns are required."}), 400
 
     state.inputs = {
+        "runKind": "refine",
         "dataFile": data_path.name,
         "kmzFile": kmz_path.name,
         "latColumn": lat_column,
@@ -458,6 +681,105 @@ def start_run() -> Any:
             lat_column,
             lon_column,
             label_order,
+        ),
+        daemon=True,
+    )
+    thread.start()
+
+    return jsonify({"runId": state.run_id})
+
+
+@app.route("/api/apply-review", methods=["POST"])
+def apply_coordinate_review() -> Any:
+    source_run_id = request.form.get("source_run_id", "").strip()
+    review_upload = request.files.get("coordinate_review_file")
+    review_decisions_text = request.form.get("review_decisions", "").strip()
+    lat_column = request.form.get("lat_column", "").strip()
+    lon_column = request.form.get("lon_column", "").strip()
+    label_order = request.form.get("label_order", "").strip()
+
+    if not source_run_id:
+        return jsonify({"error": "A previous run is required."}), 400
+    if (review_upload is None or not review_upload.filename) and not review_decisions_text:
+        return jsonify({"error": "Coordinate review file or browser review decisions are required."}), 400
+
+    with RUNS_LOCK:
+        source_state = RUNS.get(source_run_id)
+    if not source_state or not source_state.output_dir:
+        return jsonify({"error": "Previous run not found."}), 404
+
+    source_inputs = dict(source_state.inputs or {})
+    data_name = str(source_inputs.get("dataFile") or "").strip()
+    kmz_name = str(source_inputs.get("kmzFile") or "").strip()
+    lat_column = lat_column or str(source_inputs.get("latColumn") or "").strip()
+    lon_column = lon_column or str(source_inputs.get("lonColumn") or "").strip()
+    label_order = label_order or str(source_inputs.get("labelOrder") or "west_to_east").strip() or "west_to_east"
+
+    if not data_name or not kmz_name:
+        return jsonify({"error": "Previous run is missing the original crash data or KMZ input."}), 400
+    if not lat_column or not lon_column:
+        return jsonify({"error": "Latitude and longitude columns are required."}), 400
+
+    review_decisions: Dict[str, CoordinateReviewDecision] = {}
+    if review_decisions_text:
+        try:
+            review_decisions = _parse_review_decisions_payload(review_decisions_text)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    state = _create_state()
+    try:
+        run_dir = OUTPUT_ROOT / state.run_id
+        input_dir = run_dir / "inputs"
+        source_input_dir = source_state.output_dir / "inputs"
+        data_path = _copy_input_file(
+            source_input_dir / data_name,
+            dest_dir=input_dir,
+            label="Crash data file",
+        )
+        kmz_path = _copy_input_file(
+            source_input_dir / kmz_name,
+            dest_dir=input_dir,
+            label="KMZ boundary",
+        )
+        review_path = None
+        if review_upload is not None and review_upload.filename:
+            review_path = _save_upload(
+                review_upload,
+                dest_dir=input_dir,
+                allowed_exts=(".csv", ".xlsx", ".xlsm"),
+                label="Coordinate review file",
+            )
+    except Exception as exc:
+        _discard_state(state.run_id)
+        return jsonify({"error": str(exc)}), 400
+
+    state.inputs = {
+        "runKind": "review",
+        "sourceRun": source_run_id,
+        "dataFile": data_path.name,
+        "kmzFile": kmz_path.name,
+        "latColumn": lat_column,
+        "lonColumn": lon_column,
+        "labelOrder": label_order,
+    }
+    if review_path is not None:
+        state.inputs["coordinateReviewFile"] = review_path.name
+    if review_decisions:
+        state.inputs["browserReviewDecisionCount"] = len(review_decisions)
+
+    thread = threading.Thread(
+        target=_run_refinement_job,
+        args=(
+            state,
+            data_path,
+            kmz_path,
+            run_dir,
+            lat_column,
+            lon_column,
+            label_order,
+            review_path,
+            review_decisions,
         ),
         daemon=True,
     )
@@ -489,6 +811,7 @@ def start_report() -> Any:
             state.summary = dict(source_state.summary or {})
             state.inputs = dict(source_state.inputs or {})
             state.inputs["sourceRun"] = source_run_id
+            state.inputs["runKind"] = "report"
 
         input_dir = output_dir / "inputs"
         pdf_path = None
@@ -527,6 +850,7 @@ def start_report() -> Any:
             source_name = data_path.name
             state.inputs["dataFile"] = source_name
 
+        state.inputs["runKind"] = "report"
         state.output_dir = output_dir
         source_path = pdf_path or data_path
         if source_path is None:
@@ -570,11 +894,22 @@ def _run_refinement_job(
     lat_column: str,
     lon_column: str,
     label_order: str,
+    coordinate_review_path: Optional[Path] = None,
+    review_decisions: Optional[Dict[str, CoordinateReviewDecision]] = None,
 ) -> None:
     state.status = "running"
-    state.started_at = datetime.utcnow()
+    state.started_at = _utcnow()
     state.output_dir = run_dir
-    state.append_log(f"Starting refinement for {data_path.name}")
+    if coordinate_review_path is not None:
+        state.append_log(
+            f"Applying reviewed coordinate decisions from {coordinate_review_path.name} to {data_path.name}"
+        )
+    elif review_decisions:
+        state.append_log(
+            f"Applying {len(review_decisions)} browser review decision(s) to {data_path.name}"
+        )
+    else:
+        state.append_log(f"Starting refinement for {data_path.name}")
     try:
         result = run_refinement_pipeline(
             data_path=data_path,
@@ -583,27 +918,38 @@ def _run_refinement_job(
             lat_column=lat_column,
             lon_column=lon_column,
             label_order=label_order,
+            coordinate_review_path=coordinate_review_path,
+            review_decisions=review_decisions,
         )
         for msg in result.log:
             state.append_log(msg)
 
         state.status = "success"
-        state.message = "Refinement complete."
+        state.message = (
+            "Coordinate decisions applied."
+            if coordinate_review_path is not None or review_decisions
+            else "Refinement complete."
+        )
         state.append_log(state.message)
 
         state.summary = _build_summary(
             state=state,
             report=result.refinement_report,
             boundary_report=result.boundary_report,
+            recovery_report=result.recovery_report,
             kmz_count=result.kmz_count,
         )
     except Exception as exc:
         state.status = "error"
         state.error = str(exc)
-        state.message = "Refinement failed."
+        state.message = (
+            "Applying coordinate decisions failed."
+            if coordinate_review_path is not None or review_decisions
+            else "Refinement failed."
+        )
         state.append_log(f"Error: {exc}", level="error")
     finally:
-        state.finished_at = datetime.utcnow()
+        state.finished_at = _utcnow()
         if state.output_dir:
             state.outputs = _list_outputs(state.output_dir)
 
@@ -616,14 +962,28 @@ def _run_report_job(
     lon_column: str,
 ) -> None:
     state.status = "running"
-    state.started_at = datetime.utcnow()
+    state.started_at = _utcnow()
+    state.message = "Preparing PDF report."
     state.append_log(f"Generating PDF report from {source_path.name}")
+
+    def _report_progress(current: int, total: int) -> None:
+        if total <= 0:
+            state.message = "Preparing PDF report."
+            return
+        if current <= 0:
+            state.message = f"Preparing PDF report ({total} page(s) queued)."
+            return
+        state.message = f"Generating PDF report ({current} of {total} pages rendered)."
+        if total <= 5 or current == 1 or current == total or current % 10 == 0:
+            state.append_log(f"Rendered PDF page {current} of {total}.")
+
     try:
         run_pdf_report(
             source_path=source_path,
             output_path=pdf_out_path,
             lat_column=lat_column,
             lon_column=lon_column,
+            progress_callback=_report_progress,
         )
         state.status = "success"
         state.message = "PDF report generated."
@@ -634,7 +994,7 @@ def _run_report_job(
         state.message = "PDF report failed."
         state.append_log(f"Error: {exc}", level="error")
     finally:
-        state.finished_at = datetime.utcnow()
+        state.finished_at = _utcnow()
         if state.output_dir:
             state.outputs = _list_outputs(state.output_dir)
 
@@ -643,6 +1003,41 @@ def _run_report_job(
 def run_status(run_id: str) -> Any:
     state = _get_state(run_id)
     return jsonify(state.snapshot())
+
+
+@app.route("/api/run/<run_id>/review-queue")
+def run_review_queue(run_id: str) -> Any:
+    state = _get_state(run_id)
+    groups = _load_review_queue_for_state(state)
+    primary_groups = sum(1 for group in groups if str(group.get("reviewBucket") or "primary") != "secondary")
+    secondary_groups = len(groups) - primary_groups
+    return jsonify(
+        {
+            "runId": run_id,
+            "groupCount": len(groups),
+            "primaryGroupCount": primary_groups,
+            "secondaryGroupCount": secondary_groups,
+            "groups": groups,
+        }
+    )
+
+
+@app.route("/api/run/<run_id>/review-wizard")
+def run_review_wizard(run_id: str) -> Any:
+    state = _get_state(run_id)
+    payload = _load_review_wizard_for_state(state)
+    primary_steps = payload["primarySteps"]
+    secondary_steps = payload["secondarySteps"]
+    return jsonify(
+        {
+            "runId": run_id,
+            "primaryStepCount": len(primary_steps),
+            "secondaryStepCount": len(secondary_steps),
+            "primarySteps": primary_steps,
+            "secondarySteps": secondary_steps,
+            "mapData": payload["mapData"],
+        }
+    )
 
 
 @app.route("/api/run/<run_id>/log")

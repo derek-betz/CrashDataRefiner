@@ -8,8 +8,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
+from .coordinate_recovery import (
+    CoordinateReviewDecision,
+    CoordinateRecoveryReport,
+    load_coordinate_review_decisions,
+    recover_missing_coordinates,
+)
 from .geo import BoundaryFilterReport, PolygonBoundary, load_kmz_polygon
 from .kmz_report import write_kmz_report
 from .normalize import guess_lat_lon_columns, normalize_header
@@ -35,6 +41,22 @@ def invalid_output_path(output_path: Path) -> Path:
     return output_path.with_name(
         f"Crashes Without Valid Lat-Long Data{output_path.suffix}"
     )
+
+
+def rejected_review_output_path(output_path: Path) -> Path:
+    """Return the path for crashes explicitly rejected during coordinate review."""
+    base_name = output_path.stem
+    if base_name.lower().endswith("_refined"):
+        base_name = base_name[:-8]
+    return output_path.with_name(f"{base_name}_Rejected Coordinate Review{output_path.suffix}")
+
+
+def coordinate_review_output_path(output_path: Path) -> Path:
+    """Return the path for rows that need manual coordinate review."""
+    base_name = output_path.stem
+    if base_name.lower().endswith("_refined"):
+        base_name = base_name[:-8]
+    return output_path.with_name(f"{base_name}_Coordinate Recovery Review{output_path.suffix}")
 
 
 def kmz_output_path(output_path: Path) -> Path:
@@ -124,10 +146,15 @@ class RefinementResult:
 
     refined_rows: List[Dict[str, Any]]
     invalid_rows: List[Dict[str, Any]]
+    rejected_review_rows: List[Dict[str, Any]]
+    coordinate_review_rows: List[Dict[str, Any]]
     refinement_report: RefinementReport
     boundary_report: BoundaryFilterReport
+    recovery_report: CoordinateRecoveryReport
     output_path: Path
     invalid_path: Path
+    rejected_review_path: Path
+    coordinate_review_path: Path
     kmz_path: Path
     kmz_count: int
     log: List[str] = field(default_factory=list)
@@ -146,6 +173,8 @@ def run_refinement_pipeline(
     lat_column: str,
     lon_column: str,
     label_order: str = "west_to_east",
+    coordinate_review_path: Path | None = None,
+    review_decisions: Mapping[str, CoordinateReviewDecision] | None = None,
 ) -> RefinementResult:
     """Execute the full crash-data refinement pipeline.
 
@@ -168,13 +197,61 @@ def run_refinement_pipeline(
     data = read_spreadsheet(str(data_path))
     log.append(f"Loaded {len(data.rows)} crash rows.")
 
+    resolved_review_decisions: Dict[str, CoordinateReviewDecision] = dict(review_decisions or {})
+    if coordinate_review_path is not None:
+        review_data = read_spreadsheet(str(coordinate_review_path))
+        resolved_review_decisions.update(load_coordinate_review_decisions(review_data.rows))
+        log.append(
+            f"Loaded {len(resolved_review_decisions)} approved coordinate decision group(s) "
+            f"from {coordinate_review_path.name}."
+        )
+    elif resolved_review_decisions:
+        log.append(
+            f"Loaded {len(resolved_review_decisions)} browser review decision(s)."
+        )
+
+    prepared_rows, coordinate_review_rows, recovery_report = recover_missing_coordinates(
+        data.rows,
+        latitude_column=lat_column,
+        longitude_column=lon_column,
+        boundary=boundary,
+        review_decisions=resolved_review_decisions,
+    )
+    if recovery_report.missing_rows:
+        auto_recovered = max(recovery_report.recovered_rows - recovery_report.approved_rows, 0)
+        log.append(
+            f"Coordinate recovery evaluated {recovery_report.missing_rows} missing-coordinate rows: "
+            f"{auto_recovered} auto-recovered, "
+            f"{recovery_report.approved_rows} review-approved, "
+            f"{recovery_report.rejected_rows} review-rejected, "
+            f"{recovery_report.review_rows} queued for review "
+            f"({recovery_report.primary_review_rows} primary, "
+            f"{recovery_report.secondary_review_rows} secondary)."
+        )
+    if recovery_report.approved_rows:
+        log.append(
+            f"Applied {recovery_report.approved_rows} row(s) from approved coordinate review decisions."
+        )
+    if recovery_report.rejected_rows:
+        log.append(
+            f"Rejected {recovery_report.rejected_rows} row(s) from coordinate review decisions."
+        )
+
     refiner = CrashDataRefiner()
     refined_rows, report, boundary_report, invalid_rows = refiner.refine_rows_with_boundary(
-        data.rows,
+        prepared_rows,
         boundary=boundary,
         latitude_column=lat_column,
         longitude_column=lon_column,
     )
+    rejected_review_rows = [
+        row for row in invalid_rows
+        if str(row.get("coordinate_recovery_status") or "") == "review_rejected"
+    ]
+    invalid_rows = [
+        row for row in invalid_rows
+        if str(row.get("coordinate_recovery_status") or "") != "review_rejected"
+    ]
     refined_rows = order_and_number_rows(
         refined_rows,
         lat_column=lat_column,
@@ -197,6 +274,14 @@ def run_refinement_pipeline(
     write_spreadsheet(str(inv_path), invalid_rows)
     log.append(f"Invalid coordinate output saved: {inv_path.name}")
 
+    rejected_path = rejected_review_output_path(out_path)
+    write_spreadsheet(str(rejected_path), rejected_review_rows)
+    log.append(f"Rejected coordinate review output saved: {rejected_path.name}")
+
+    review_path = coordinate_review_output_path(out_path)
+    write_spreadsheet(str(review_path), coordinate_review_rows)
+    log.append(f"Coordinate review output saved: {review_path.name}")
+
     kmz_out = kmz_output_path(out_path)
     kmz_count = write_kmz_report(
         str(kmz_out),
@@ -210,10 +295,15 @@ def run_refinement_pipeline(
     return RefinementResult(
         refined_rows=refined_rows,
         invalid_rows=invalid_rows,
+        rejected_review_rows=rejected_review_rows,
+        coordinate_review_rows=coordinate_review_rows,
         refinement_report=report,
         boundary_report=boundary_report,
+        recovery_report=recovery_report,
         output_path=out_path,
         invalid_path=inv_path,
+        rejected_review_path=rejected_path,
+        coordinate_review_path=review_path,
         kmz_path=kmz_out,
         kmz_count=kmz_count,
         log=log,
@@ -245,6 +335,7 @@ def run_pdf_report(
     output_path: Path,
     lat_column: str,
     lon_column: str,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> None:
     """Generate a PDF full report from *source_path* and write to *output_path*."""
     data = read_spreadsheet(str(source_path))
@@ -253,4 +344,5 @@ def run_pdf_report(
         rows=data.rows,
         latitude_column=lat_column,
         longitude_column=lon_column,
+        progress_callback=progress_callback,
     )

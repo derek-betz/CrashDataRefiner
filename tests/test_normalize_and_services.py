@@ -4,12 +4,16 @@ from __future__ import annotations
 from pathlib import Path
 import zipfile
 
+from crash_data_refiner.coordinate_recovery import CoordinateReviewDecision
 from crash_data_refiner.normalize import normalize_header, guess_lat_lon_columns
+from crash_data_refiner.spreadsheets import read_spreadsheet, read_spreadsheet_headers
 from crash_data_refiner.services import (
+    coordinate_review_output_path,
     refined_output_path,
     invalid_output_path,
     kmz_output_path,
     pdf_output_path,
+    rejected_review_output_path,
     build_output_headers,
     order_and_number_rows,
     run_refinement_pipeline,
@@ -95,6 +99,18 @@ def test_invalid_output_path(tmp_path: Path) -> None:
     assert p.name == "Crashes Without Valid Lat-Long Data.csv"
 
 
+def test_coordinate_review_output_path(tmp_path: Path) -> None:
+    base = tmp_path / "crashes_refined.csv"
+    p = coordinate_review_output_path(base)
+    assert p.name == "crashes_Coordinate Recovery Review.csv"
+
+
+def test_rejected_review_output_path(tmp_path: Path) -> None:
+    base = tmp_path / "crashes_refined.csv"
+    p = rejected_review_output_path(base)
+    assert p.name == "crashes_Rejected Coordinate Review.csv"
+
+
 def test_kmz_output_path_strips_refined(tmp_path: Path) -> None:
     base = tmp_path / "crashes_refined.csv"
     p = kmz_output_path(base)
@@ -105,6 +121,31 @@ def test_pdf_output_path_strips_refined(tmp_path: Path) -> None:
     base = tmp_path / "crashes_refined.csv"
     p = pdf_output_path(base)
     assert p.name == "crashes_Crash Data Full Report.pdf"
+
+
+# ---------------------------------------------------------------------------
+# Spreadsheet sheet selection
+# ---------------------------------------------------------------------------
+
+
+def test_read_spreadsheet_prefers_data_sheet_over_blank_about_sheet(tmp_path: Path) -> None:
+    from openpyxl import Workbook
+
+    path = tmp_path / "multi_sheet.xlsx"
+    workbook = Workbook()
+    workbook.active.title = "About"
+    workbook.create_sheet("Target Collision Records")
+    sheet = workbook["Target Collision Records"]
+    sheet.append(["Crash ID", "Latitude", "Longitude"])
+    sheet.append(["1", "40.0", "-86.0"])
+    workbook.save(path)
+
+    headers = read_spreadsheet_headers(str(path))
+    data = read_spreadsheet(str(path))
+
+    assert headers == ["Crash ID", "Latitude", "Longitude"]
+    assert data.headers == headers
+    assert data.rows == [{"Crash ID": "1", "Latitude": "40.0", "Longitude": "-86.0"}]
 
 
 # ---------------------------------------------------------------------------
@@ -166,13 +207,38 @@ def _write_test_kmz(path: Path) -> None:
 def test_run_refinement_pipeline(tmp_path: Path) -> None:
     import csv
 
-    # Write a small crash CSV with one point inside and one outside the boundary.
+    # Write a crash CSV with one point inside, one outside, and one missing row
+    # that should be auto-recovered from the exact same location signature.
     data_file = tmp_path / "crashes.csv"
-    with data_file.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["Crash ID", "Lat", "Lon"])
+    with data_file.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["Crash ID", "Lat", "Lon", "Roadway Number", "Intersecting Road", "City", "County"],
+        )
         writer.writeheader()
-        writer.writerow({"Crash ID": "1", "Lat": "1.0", "Lon": "0.0"})   # inside
-        writer.writerow({"Crash ID": "2", "Lat": "5.0", "Lon": "0.0"})   # outside
+        writer.writerow(
+            {
+                "Crash ID": "1",
+                "Lat": "1.0",
+                "Lon": "0.0",
+                "Roadway Number": "SR1",
+                "Intersecting Road": "Main",
+                "City": "Testville",
+                "County": "Example",
+            }
+        )  # inside
+        writer.writerow({"Crash ID": "2", "Lat": "5.0", "Lon": "0.0"})  # outside
+        writer.writerow(
+            {
+                "Crash ID": "3",
+                "Lat": "",
+                "Lon": "",
+                "Roadway Number": "SR1",
+                "Intersecting Road": "Main",
+                "City": "Testville",
+                "County": "Example",
+            }
+        )  # auto-recovered inside
 
     kmz_file = tmp_path / "boundary.kmz"
     _write_test_kmz(kmz_file)
@@ -186,8 +252,270 @@ def test_run_refinement_pipeline(tmp_path: Path) -> None:
         lon_column="Lon",
     )
 
-    assert result.boundary_report.included_rows == 1
+    assert result.boundary_report.included_rows == 2
     assert result.boundary_report.excluded_rows == 1
     assert result.output_path.exists()
+    assert result.coordinate_review_path.exists()
     assert result.kmz_path.exists()
-    assert result.kmz_count == 1
+    assert result.kmz_count == 2
+    assert result.recovery_report.missing_rows == 1
+    assert result.recovery_report.recovered_rows == 1
+    assert result.recovery_report.review_rows == 0
+
+    refined = read_spreadsheet(str(result.output_path))
+    recovered_row = next(row for row in refined.rows if row["crash_id"] == "3")
+    assert float(recovered_row["lat"]) == 1.0
+    assert float(recovered_row["lon"]) == 0.0
+    assert recovered_row["coordinate_source"] == "recovered"
+
+
+def test_run_refinement_pipeline_applies_coordinate_review_workbook(tmp_path: Path) -> None:
+    import csv
+
+    data_file = tmp_path / "crashes.csv"
+    with data_file.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["Crash ID", "Lat", "Lon", "Roadway Number", "Intersecting Road", "City", "County"],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "Crash ID": "1",
+                "Lat": "1.0",
+                "Lon": "0.0",
+                "Roadway Number": "SR2",
+                "Intersecting Road": "Oak",
+                "City": "Testville",
+                "County": "Example",
+            }
+        )  # inside boundary
+        writer.writerow(
+            {
+                "Crash ID": "2",
+                "Lat": "5.0",
+                "Lon": "0.0",
+                "Roadway Number": "SR2",
+                "Intersecting Road": "Oak",
+                "City": "Testville",
+                "County": "Example",
+            }
+        )  # outside boundary
+        writer.writerow(
+            {
+                "Crash ID": "3",
+                "Lat": "",
+                "Lon": "",
+                "Roadway Number": "SR2",
+                "Intersecting Road": "Oak",
+                "City": "Testville",
+                "County": "Example",
+            }
+        )  # unresolved until review workbook is applied
+
+    review_file = tmp_path / "coordinate_review.csv"
+    with review_file.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "coordinate_recovery_group",
+                "approve_for_group",
+                "approved_latitude",
+                "approved_longitude",
+                "review_notes",
+            ],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "coordinate_recovery_group": "SR2|OAK|TESTVILLE|EXAMPLE",
+                "approve_for_group": "yes",
+                "approved_latitude": "1.0",
+                "approved_longitude": "0.0",
+                "review_notes": "Approved grouped location.",
+            }
+        )
+
+    kmz_file = tmp_path / "boundary.kmz"
+    _write_test_kmz(kmz_file)
+
+    run_dir = tmp_path / "run_002"
+    result = run_refinement_pipeline(
+        data_path=data_file,
+        kmz_path=kmz_file,
+        run_dir=run_dir,
+        lat_column="Lat",
+        lon_column="Lon",
+        coordinate_review_path=review_file,
+    )
+
+    assert result.boundary_report.included_rows == 2
+    assert result.boundary_report.excluded_rows == 1
+    assert result.boundary_report.invalid_rows == 0
+    assert result.recovery_report.missing_rows == 1
+    assert result.recovery_report.recovered_rows == 1
+    assert result.recovery_report.approved_rows == 1
+    assert result.recovery_report.review_rows == 0
+
+    refined = read_spreadsheet(str(result.output_path))
+    recovered_row = next(row for row in refined.rows if row["crash_id"] == "3")
+    assert float(recovered_row["lat"]) == 1.0
+    assert float(recovered_row["lon"]) == 0.0
+    assert recovered_row["coordinate_source"] == "review_approved"
+    assert recovered_row["coordinate_recovery_status"] == "review_applied"
+
+
+def test_run_refinement_pipeline_applies_browser_review_decisions(tmp_path: Path) -> None:
+    import csv
+
+    data_file = tmp_path / "crashes.csv"
+    with data_file.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["Crash ID", "Lat", "Lon", "Roadway Number", "Intersecting Road", "City", "County"],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "Crash ID": "1",
+                "Lat": "",
+                "Lon": "",
+                "Roadway Number": "SR2",
+                "Intersecting Road": "Oak",
+                "City": "Testville",
+                "County": "Example",
+            }
+        )
+
+    kmz_file = tmp_path / "boundary.kmz"
+    _write_test_kmz(kmz_file)
+
+    run_dir = tmp_path / "run_003"
+    result = run_refinement_pipeline(
+        data_path=data_file,
+        kmz_path=kmz_file,
+        run_dir=run_dir,
+        lat_column="Lat",
+        lon_column="Lon",
+        review_decisions={
+            "SR2|OAK|TESTVILLE|EXAMPLE": CoordinateReviewDecision(
+                group_key="SR2|OAK|TESTVILLE|EXAMPLE",
+                latitude=1.0,
+                longitude=0.0,
+                note="Applied from browser review queue.",
+            )
+        },
+    )
+
+    assert result.recovery_report.approved_rows == 1
+    assert result.recovery_report.recovered_rows == 1
+    assert result.boundary_report.included_rows == 1
+    refined = read_spreadsheet(str(result.output_path))
+    recovered_row = refined.rows[0]
+    assert recovered_row["coordinate_source"] == "review_approved"
+
+
+def test_run_refinement_pipeline_applies_row_level_browser_review_decisions_and_rejections(
+    tmp_path: Path,
+) -> None:
+    import csv
+
+    data_file = tmp_path / "crashes.csv"
+    with data_file.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["Crash ID", "Lat", "Lon", "Roadway Number", "Intersecting Road", "City", "County"],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "Crash ID": "1",
+                "Lat": "1.0000",
+                "Lon": "0.0000",
+                "Roadway Number": "SR2",
+                "Intersecting Road": "Oak",
+                "City": "Testville",
+                "County": "Example",
+            }
+        )
+        writer.writerow(
+            {
+                "Crash ID": "2",
+                "Lat": "1.0006",
+                "Lon": "0.0000",
+                "Roadway Number": "SR2",
+                "Intersecting Road": "Oak",
+                "City": "Testville",
+                "County": "Example",
+            }
+        )
+        writer.writerow(
+            {
+                "Crash ID": "3",
+                "Lat": "",
+                "Lon": "",
+                "Roadway Number": "SR2",
+                "Intersecting Road": "Oak",
+                "City": "Testville",
+                "County": "Example",
+            }
+        )
+        writer.writerow(
+            {
+                "Crash ID": "4",
+                "Lat": "",
+                "Lon": "",
+                "Roadway Number": "SR2",
+                "Intersecting Road": "Oak",
+                "City": "Testville",
+                "County": "Example",
+            }
+        )
+
+    kmz_file = tmp_path / "boundary.kmz"
+    _write_test_kmz(kmz_file)
+
+    run_dir = tmp_path / "run_004"
+    result = run_refinement_pipeline(
+        data_path=data_file,
+        kmz_path=kmz_file,
+        run_dir=run_dir,
+        lat_column="Lat",
+        lon_column="Lon",
+        review_decisions={
+            "3__row4": CoordinateReviewDecision(
+                group_key="3__row4",
+                latitude=1.0003,
+                longitude=0.0,
+                action="apply",
+                note="Confirmed manual map placement.",
+            ),
+            "4__row5": CoordinateReviewDecision(
+                group_key="4__row5",
+                action="reject",
+                note="Rejected during browser wizard review.",
+            ),
+        },
+    )
+
+    assert result.recovery_report.missing_rows == 2
+    assert result.recovery_report.approved_rows == 1
+    assert result.recovery_report.rejected_rows == 1
+    assert result.recovery_report.review_rows == 0
+    assert result.boundary_report.included_rows == 3
+    assert result.invalid_rows == []
+    assert len(result.rejected_review_rows) == 1
+    assert result.rejected_review_path.exists()
+
+    refined = read_spreadsheet(str(result.output_path))
+    refined_ids = {row["crash_id"] for row in refined.rows}
+    assert refined_ids == {"1", "2", "3"}
+    applied_row = next(row for row in refined.rows if row["crash_id"] == "3")
+    assert applied_row["coordinate_source"] == "review_approved"
+    assert applied_row["coordinate_recovery_status"] == "review_applied"
+
+    rejected = read_spreadsheet(str(result.rejected_review_path))
+    assert len(rejected.rows) == 1
+    assert rejected.rows[0]["crash_id"] == "4"
+    assert rejected.rows[0]["coordinate_recovery_status"] == "review_rejected"
+    assert rejected.rows[0]["coordinate_source"] == "review_rejected"
