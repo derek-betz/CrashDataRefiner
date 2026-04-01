@@ -107,6 +107,69 @@ def test_recover_missing_coordinates_autofills_safe_matches_and_groups_review_ro
     assert grouped_review_rows[0]["suggested_longitude"] is not None
 
 
+def test_recover_missing_coordinates_ignores_origin_evidence_coordinates() -> None:
+    rows = [
+        {
+            "Crash ID": "1",
+            "Latitude": "0.0",
+            "Longitude": "0.0",
+            "Roadway Number": "US41",
+            "Intersecting Road": "Maplewood",
+            "City": "Highland",
+            "County": "Lake",
+        },
+        {
+            "Crash ID": "2",
+            "Latitude": "0.0",
+            "Longitude": "0.0",
+            "Roadway Number": "US41",
+            "Intersecting Road": "Maplewood",
+            "City": "Highland",
+            "County": "Lake",
+        },
+        {
+            "Crash ID": "3",
+            "Latitude": "41.55916",
+            "Longitude": "-87.47128",
+            "Roadway Number": "US41",
+            "Intersecting Road": "Maplewood",
+            "City": "Highland",
+            "County": "Lake",
+        },
+        {
+            "Crash ID": "4",
+            "Latitude": "",
+            "Longitude": "",
+            "Roadway Number": "US41",
+            "Intersecting Road": "Maplewood",
+            "City": "Highland",
+            "County": "Lake",
+        },
+    ]
+
+    output_rows, review_rows, report = recover_missing_coordinates(
+        rows,
+        latitude_column="Latitude",
+        longitude_column="Longitude",
+        boundary=PolygonBoundary(
+            outer=[
+                (-87.48, 41.55),
+                (-87.46, 41.55),
+                (-87.46, 41.57),
+                (-87.48, 41.57),
+                (-87.48, 41.55),
+            ]
+        ),
+    )
+
+    recovered_row = next(row for row in output_rows if row["crash_id"] == "4")
+    assert report.recovered_rows == 1
+    assert report.review_rows == 0
+    assert recovered_row["coordinate_source"] == "recovered"
+    assert recovered_row["latitude"] == 41.55916
+    assert recovered_row["longitude"] == -87.47128
+
+
 def test_load_coordinate_review_decisions_uses_approved_or_suggested_coordinates() -> None:
     decisions = load_coordinate_review_decisions(
         [
@@ -397,6 +460,45 @@ def test_build_coordinate_review_wizard_steps_orders_rows_and_exposes_narrative(
     assert steps[1]["reviewBucket"] == "secondary"
     assert steps[1]["hasSuggestion"] is False
     assert steps[1]["hasNarrative"] is True
+
+
+def test_review_builders_hide_outside_boundary_origin_suggestions() -> None:
+    rows = [
+        {
+            "coordinate_recovery_group": "US41|MAPLEWOOD|HIGHLAND|LAKE",
+            "coordinate_recovery_row_key": "903514070__row1653",
+            "coordinate_recovery_source_row": 1653,
+            "coordinate_recovery_group_size": 3,
+            "coordinate_recovery_status": "review_required",
+            "coordinate_recovery_confidence": "medium",
+            "coordinate_recovery_method": "intersection_match",
+            "coordinate_recovery_match_count": 13,
+            "coordinate_recovery_candidate_count": 8,
+            "coordinate_recovery_note": "Top candidate is outside the KMZ boundary.",
+            "suggested_latitude": "0.0",
+            "suggested_longitude": "0.0",
+            "suggested_inside_boundary": "no",
+            "project_relevance_bucket": "primary",
+            "project_relevance_score": 47,
+            "project_relevance_reason": "Route/intersection pattern matches rows that already fall inside the KMZ.",
+            "roadway_number": "US41",
+            "intersecting_road": "Maplewood",
+            "city": "Highland",
+            "county": "Lake",
+            "crash_id": "903514070",
+        }
+    ]
+
+    queue = build_coordinate_review_queue(rows)
+    steps = build_coordinate_review_wizard_steps(rows)
+
+    assert queue[0]["hasSuggestion"] is False
+    assert queue[0]["suggestedLatitude"] is None
+    assert queue[0]["suggestedLongitude"] is None
+    assert steps[0]["hasSuggestion"] is False
+    assert steps[0]["suggestedLatitude"] is None
+    assert steps[0]["suggestedLongitude"] is None
+    assert steps[0]["suggestedInsideBoundary"] is None
 
 
 def test_recover_missing_coordinates_applies_row_level_reject_decision() -> None:

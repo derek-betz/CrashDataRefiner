@@ -6,16 +6,19 @@ import zipfile
 
 from crash_data_refiner.coordinate_recovery import CoordinateReviewDecision
 from crash_data_refiner.normalize import normalize_header, guess_lat_lon_columns
-from crash_data_refiner.spreadsheets import read_spreadsheet, read_spreadsheet_headers
+from crash_data_refiner.spreadsheets import read_spreadsheet, read_spreadsheet_headers, write_spreadsheet
 from crash_data_refiner.services import (
     coordinate_review_output_path,
+    detect_label_order,
     refined_output_path,
     invalid_output_path,
     kmz_output_path,
     pdf_output_path,
+    relabel_refined_outputs,
     rejected_review_output_path,
     build_output_headers,
     order_and_number_rows,
+    resolve_label_order,
     run_refinement_pipeline,
 )
 
@@ -194,6 +197,35 @@ def test_order_west_to_east() -> None:
     assert lons == sorted(lons)
 
 
+def test_detect_label_order_prefers_west_to_east_when_longitude_span_is_larger() -> None:
+    rows = [
+        {"lat": "40.0", "lon": "-110.0"},
+        {"lat": "40.3", "lon": "-100.0"},
+        {"lat": "40.1", "lon": "-90.0"},
+    ]
+
+    assert detect_label_order(rows, lat_column="lat", lon_column="lon") == "west_to_east"
+
+
+def test_detect_label_order_prefers_south_to_north_when_latitude_span_is_larger() -> None:
+    rows = [
+        {"lat": "30.0", "lon": "-100.0"},
+        {"lat": "40.0", "lon": "-100.5"},
+        {"lat": "50.0", "lon": "-100.2"},
+    ]
+
+    assert detect_label_order(rows, lat_column="lat", lon_column="lon") == "south_to_north"
+
+
+def test_resolve_label_order_defaults_ties_to_west_to_east() -> None:
+    rows = [
+        {"lat": "30.0", "lon": "-100.0"},
+        {"lat": "40.0", "lon": "-90.0"},
+    ]
+
+    assert resolve_label_order(rows, lat_column="lat", lon_column="lon", label_order="auto") == "west_to_east"
+
+
 # ---------------------------------------------------------------------------
 # run_refinement_pipeline integration
 # ---------------------------------------------------------------------------
@@ -258,6 +290,8 @@ def test_run_refinement_pipeline(tmp_path: Path) -> None:
     assert result.coordinate_review_path.exists()
     assert result.kmz_path.exists()
     assert result.kmz_count == 2
+    assert result.requested_label_order == "auto"
+    assert result.resolved_label_order == "west_to_east"
     assert result.recovery_report.missing_rows == 1
     assert result.recovery_report.recovered_rows == 1
     assert result.recovery_report.review_rows == 0
@@ -267,6 +301,40 @@ def test_run_refinement_pipeline(tmp_path: Path) -> None:
     assert float(recovered_row["lat"]) == 1.0
     assert float(recovered_row["lon"]) == 0.0
     assert recovered_row["coordinate_source"] == "recovered"
+
+
+def test_relabel_refined_outputs_rewrites_refined_file_and_removes_stale_pdf(tmp_path: Path) -> None:
+    refined_path = tmp_path / "crashes_refined.csv"
+    write_spreadsheet(
+        str(refined_path),
+        [
+            {"crash_id": "3", "lat": "40.0", "lon": "-86.0", "kmz_label": 99},
+            {"crash_id": "1", "lat": "30.0", "lon": "-86.1", "kmz_label": 98},
+            {"crash_id": "2", "lat": "35.0", "lon": "-86.2", "kmz_label": 97},
+        ],
+    )
+    kmz_path = tmp_path / "crashes_Crash Data.kmz"
+    stale_pdf = tmp_path / "crashes_Crash Data Full Report.pdf"
+    stale_pdf.write_bytes(b"%PDF-1.4\n")
+
+    result = relabel_refined_outputs(
+        refined_path=refined_path,
+        kmz_path=kmz_path,
+        lat_column="lat",
+        lon_column="lon",
+        label_order="south_to_north",
+        remove_output_paths=[stale_pdf],
+    )
+
+    assert result.requested_label_order == "south_to_north"
+    assert result.resolved_label_order == "south_to_north"
+    assert result.kmz_path.exists()
+    assert stale_pdf in result.removed_outputs
+    assert not stale_pdf.exists()
+
+    refined = read_spreadsheet(str(refined_path))
+    assert [row["crash_id"] for row in refined.rows] == ["1", "2", "3"]
+    assert [row["kmz_label"] for row in refined.rows] == ["1", "2", "3"]
 
 
 def test_run_refinement_pipeline_applies_coordinate_review_workbook(tmp_path: Path) -> None:
@@ -493,7 +561,7 @@ def test_run_refinement_pipeline_applies_row_level_browser_review_decisions_and_
             "4__row5": CoordinateReviewDecision(
                 group_key="4__row5",
                 action="reject",
-                note="Rejected during browser wizard review.",
+                note="Excluded during browser review workbench session.",
             ),
         },
     )

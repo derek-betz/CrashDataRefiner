@@ -1,0 +1,12 @@
+{
+  "name": "crash-data-refiner-qc",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "qc:web": "node scripts/qc_browser_smoke.mjs",
+    "qc:datasets": "python scripts/qc_reference_datasets.py"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2"
+  }
+}

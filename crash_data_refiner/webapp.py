@@ -1,36 +1,46 @@
 from __future__ import annotations
 
-import json
-import shutil
 import threading
 import tempfile
-import uuid
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from flask import Flask, abort, jsonify, request, send_from_directory
 from werkzeug.utils import secure_filename
 
-from .coordinate_recovery import (
-    CoordinateReviewDecision,
-    CoordinateRecoveryReport,
-    build_coordinate_review_queue,
-    build_coordinate_review_wizard_steps,
-)
+from .coordinate_recovery import CoordinateReviewDecision, CoordinateRecoveryReport
 from .geo import BoundaryFilterReport, load_kmz_polygon, parse_coordinate
 from .map_report import write_map_report
 from .normalize import guess_lat_lon_columns, normalize_header
 from .refiner import CrashDataRefiner, RefinementReport
+from .run_contract import RunOutputCounts, load_output_counts_from_refined_path
 from .services import (
-    coordinate_review_output_path,
     pdf_output_path,
     refined_output_path,
+    relabel_refined_outputs,
     run_pdf_report,
     run_refinement_pipeline,
+    summary_output_path,
+    kmz_output_path,
 )
 from .spreadsheets import read_spreadsheet, read_spreadsheet_headers
+from .web_files import copy_input_file as _copy_input_file, save_upload as _save_upload
+from .web_review import (
+    load_review_queue_for_state as _load_review_queue_for_state,
+    load_review_wizard_for_state as _load_review_wizard_for_state,
+    parse_review_decisions_payload as _parse_review_decisions_payload,
+)
+from .web_state import (
+    RUNS,
+    RUNS_LOCK,
+    RunState,
+    discard_state as _discard_state,
+    format_duration as _format_duration,
+    list_outputs as _list_outputs,
+    new_id as _new_id,
+    utcnow as _utcnow,
+)
+from .web_summary import build_web_run_summary, refresh_web_run_summary_for_relabel
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 STATIC_DIR = Path(__file__).resolve().parent / "web"
@@ -38,120 +48,9 @@ OUTPUT_ROOT = BASE_DIR / "outputs" / "web_runs"
 PREVIEW_ROOT = OUTPUT_ROOT / "_preview"
 
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
-MAX_LOG_ENTRIES = 1500
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="")
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
-
-
-@dataclass
-class RunState:
-    run_id: str
-    created_at: datetime
-    status: str = "queued"
-    message: str = ""
-    error: Optional[str] = None
-    started_at: Optional[datetime] = None
-    finished_at: Optional[datetime] = None
-    output_dir: Optional[Path] = None
-    inputs: Dict[str, Any] = field(default_factory=dict)
-    outputs: List[Dict[str, Any]] = field(default_factory=list)
-    summary: Dict[str, Any] = field(default_factory=dict)
-    log_entries: List[Dict[str, Any]] = field(default_factory=list)
-    log_seq: int = 0
-    last_log: str = ""
-    lock: threading.Lock = field(default_factory=threading.Lock)
-
-    def append_log(self, text: str, *, level: str = "info") -> None:
-        if not text:
-            return
-        lines = [line for line in text.splitlines() if line.strip()]
-        if not lines:
-            return
-        now = _utcnow().isoformat()
-        with self.lock:
-            for line in lines:
-                self.log_seq += 1
-                entry = {
-                    "seq": self.log_seq,
-                    "ts": now,
-                    "level": level,
-                    "text": line,
-                }
-                self.log_entries.append(entry)
-                self.last_log = line
-            if len(self.log_entries) > MAX_LOG_ENTRIES:
-                overflow = len(self.log_entries) - MAX_LOG_ENTRIES
-                del self.log_entries[:overflow]
-
-    def log_since(self, seq: int) -> List[Dict[str, Any]]:
-        with self.lock:
-            if seq <= 0:
-                return list(self.log_entries)
-            if self.log_entries and seq < self.log_entries[0]["seq"]:
-                return list(self.log_entries)
-            return [entry for entry in self.log_entries if entry["seq"] > seq]
-
-    def snapshot(self) -> Dict[str, Any]:
-        return {
-            "id": self.run_id,
-            "status": self.status,
-            "message": self.message,
-            "error": self.error,
-            "createdAt": self.created_at.isoformat(),
-            "startedAt": self.started_at.isoformat() if self.started_at else None,
-            "finishedAt": self.finished_at.isoformat() if self.finished_at else None,
-            "duration": _format_duration(self.started_at, self.finished_at),
-            "inputs": self.inputs,
-            "outputs": self.outputs,
-            "summary": self.summary,
-            "logCount": self.log_seq,
-            "lastLog": self.last_log,
-        }
-
-
-RUNS: Dict[str, RunState] = {}
-RUNS_LOCK = threading.Lock()
-
-
-def _new_id() -> str:
-    return uuid.uuid4().hex
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _format_duration(start: Optional[datetime], end: Optional[datetime]) -> str:
-    if not start or not end:
-        return ""
-    total_seconds = int((end - start).total_seconds())
-    if total_seconds <= 0:
-        return "0s"
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    parts: List[str] = []
-    if hours:
-        parts.append(f"{hours}h")
-    if minutes:
-        parts.append(f"{minutes}m")
-    if not hours:
-        parts.append(f"{seconds}s")
-    return " ".join(dict.fromkeys(parts))
-
-
-def _list_outputs(output_dir: Path) -> List[Dict[str, Any]]:
-    if not output_dir.exists():
-        return []
-    items = []
-    for path in sorted(output_dir.iterdir()):
-        if not path.is_file():
-            continue
-        items.append({
-            "name": path.name,
-            "size": path.stat().st_size,
-        })
-    return items
 
 
 def _build_preview_points(
@@ -180,10 +79,9 @@ def _build_preview_points(
 
 
 def _create_state() -> RunState:
-    run_id = _new_id()
-    state = RunState(run_id=run_id, created_at=_utcnow())
+    state = RunState(run_id=_new_id(), created_at=_utcnow())
     with RUNS_LOCK:
-        RUNS[run_id] = state
+        RUNS[state.run_id] = state
     return state
 
 
@@ -195,183 +93,23 @@ def _get_state(run_id: str) -> RunState:
     return state
 
 
-def _discard_state(run_id: str) -> None:
-    with RUNS_LOCK:
-        RUNS.pop(run_id, None)
-
-
-def _save_upload(file_obj: Any, *, dest_dir: Path, allowed_exts: Tuple[str, ...], label: str) -> Path:
-    if file_obj is None or not file_obj.filename:
-        raise ValueError(f"{label} is required.")
-    filename = secure_filename(file_obj.filename)
-    ext = Path(filename).suffix.lower()
-    if ext not in allowed_exts:
-        raise ValueError(f"{label} must be one of: {', '.join(allowed_exts)}.")
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    path = dest_dir / filename
-    file_obj.save(path)
-    return path
-
-
-def _copy_input_file(source: Path, *, dest_dir: Path, label: str) -> Path:
-    if not source.exists():
-        raise ValueError(f"{label} was not found.")
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    target = dest_dir / source.name
-    shutil.copy2(source, target)
-    return target
-
-
-def _resolve_coordinate_review_path(state: RunState) -> Optional[Path]:
-    if not state.output_dir:
-        return None
-    data_name = str((state.inputs or {}).get("dataFile") or "").strip()
-    if not data_name:
-        return None
-    output_path = refined_output_path(state.output_dir, data_name)
-    review_path = coordinate_review_output_path(output_path)
-    if review_path.exists():
-        return review_path
-    return None
-
-
-def _load_review_queue_for_state(state: RunState) -> List[Dict[str, Any]]:
-    review_path = _resolve_coordinate_review_path(state)
-    if review_path is None:
-        return []
-    data = read_spreadsheet(str(review_path))
-    return build_coordinate_review_queue(data.rows)
-
-
-def _polygon_to_leaflet(polygon: Any) -> List[List[List[float]]]:
-    outer = [[lat, lon] for lon, lat in polygon.outer]
-    holes = [[[lat, lon] for lon, lat in ring] for ring in polygon.holes]
-    if holes:
-        return [outer, *holes]
-    return [outer]
-
-
-def _load_review_map_data_for_state(state: RunState) -> Optional[Dict[str, Any]]:
-    if not state.output_dir:
-        return None
-
-    inputs = dict(state.inputs or {})
-    data_name = str(inputs.get("dataFile") or "").strip()
-    kmz_name = str(inputs.get("kmzFile") or "").strip()
-    lat_column = str(inputs.get("latColumn") or "").strip()
-    lon_column = str(inputs.get("lonColumn") or "").strip()
-    if not data_name or not kmz_name or not lat_column or not lon_column:
-        return None
-
-    input_dir = state.output_dir / "inputs"
-    kmz_path = input_dir / kmz_name
-    refined_path = refined_output_path(state.output_dir, data_name)
-    if not kmz_path.exists() or not refined_path.exists():
-        return None
-
-    boundary = load_kmz_polygon(str(kmz_path))
-    refined_data = read_spreadsheet(str(refined_path))
-    lat_key = normalize_header(lat_column)
-    lon_key = normalize_header(lon_column)
-    points: List[List[float]] = []
-    for row in refined_data.rows:
-        lat = parse_coordinate(row.get(lat_key))
-        lon = parse_coordinate(row.get(lon_key))
-        if lat is None or lon is None:
-            continue
-        points.append([lat, lon])
-
-    return {
-        "polygon": _polygon_to_leaflet(boundary),
-        "points": points,
-        "pointCount": len(points),
-    }
-
-
-def _load_review_wizard_for_state(state: RunState) -> Dict[str, Any]:
-    review_path = _resolve_coordinate_review_path(state)
-    if review_path is None:
-        return {
-            "primarySteps": [],
-            "secondarySteps": [],
-            "mapData": None,
-        }
-
-    data = read_spreadsheet(str(review_path))
-    steps = build_coordinate_review_wizard_steps(data.rows)
-    primary_steps = [
-        step for step in steps
-        if str(step.get("reviewBucket") or "primary") != "secondary"
-    ]
-    secondary_steps = [
-        step for step in steps
-        if str(step.get("reviewBucket") or "primary") == "secondary"
-    ]
-    return {
-        "primarySteps": primary_steps,
-        "secondarySteps": secondary_steps,
-        "mapData": _load_review_map_data_for_state(state),
-    }
-
-
-def _parse_review_decisions_payload(text: str) -> Dict[str, CoordinateReviewDecision]:
-    if not text.strip():
-        return {}
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ValueError("Review decisions must be valid JSON.") from exc
-
-    if not isinstance(payload, list):
-        raise ValueError("Review decisions must be a JSON array.")
-
-    decisions: Dict[str, CoordinateReviewDecision] = {}
-    for index, item in enumerate(payload, start=1):
-        if not isinstance(item, dict):
-            raise ValueError(f"Review decision #{index} must be an object.")
-        group_key = str(item.get("rowKey") or item.get("groupKey") or "").strip()
-        action = str(item.get("action") or "apply").strip().lower()
-        latitude = parse_coordinate(item.get("latitude"))
-        longitude = parse_coordinate(item.get("longitude"))
-        note = str(item.get("note") or "").strip()
-        if not group_key:
-            raise ValueError(
-                f"Review decision #{index} must include rowKey or groupKey."
-            )
-        if action not in {"apply", "reject"}:
-            raise ValueError(f"Review decision #{index} action must be 'apply' or 'reject'.")
-        if action == "apply" and (latitude is None or longitude is None):
-            raise ValueError(
-                f"Review decision #{index} must include latitude and longitude for applied placements."
-            )
-        existing = decisions.get(group_key)
-        if existing and (
-            existing.action != action
-            or (
-                action == "apply"
-                and (
-                    existing.latitude is None
-                    or existing.longitude is None
-                    or latitude is None
-                    or longitude is None
-                    or abs(existing.latitude - latitude) > 1e-6
-                    or abs(existing.longitude - longitude) > 1e-6
-                )
-            )
-        ):
-            raise ValueError(f"Review group '{group_key}' contains conflicting browser decisions.")
-        decisions[group_key] = CoordinateReviewDecision(
-            group_key=group_key,
-            latitude=latitude,
-            longitude=longitude,
-            action=action,
-            note=note or (
-                "Rejected in browser review wizard."
-                if action == "reject"
-                else "Applied from browser review wizard."
-            ),
-        )
-    return decisions
+def _snapshot_state(state: RunState) -> Dict[str, Any]:
+    snapshot = state.snapshot()
+    summary = dict(snapshot.get("summary") or {})
+    if "outputCounts" not in summary and state.output_dir:
+        data_name = str((state.inputs or {}).get("dataFile") or "").strip()
+        if data_name:
+            refined_path = refined_output_path(state.output_dir, data_name)
+            if refined_path.exists():
+                counts = load_output_counts_from_refined_path(refined_path)
+                summary["outputCounts"] = {
+                    "refinedRows": counts.refined_rows,
+                    "invalidRows": counts.invalid_rows,
+                    "coordinateReviewRows": counts.coordinate_review_rows,
+                    "rejectedReviewRows": counts.rejected_review_rows,
+                }
+                snapshot["summary"] = summary
+    return snapshot
 
 
 def _build_summary(
@@ -380,97 +118,48 @@ def _build_summary(
     report: RefinementReport,
     boundary_report: BoundaryFilterReport,
     recovery_report: CoordinateRecoveryReport,
+    coordinate_review_count: int,
+    rejected_review_count: int,
     kmz_count: Optional[int],
+    requested_label_order: str,
+    resolved_label_order: str,
 ) -> Dict[str, Any]:
-    metrics = [
-        {
-            "label": "Rows Scanned",
-            "value": str(boundary_report.total_rows),
-            "detail": "Raw crash rows processed",
-        },
-        {
-            "label": "Included",
-            "value": str(boundary_report.included_rows),
-            "detail": "Inside boundary",
-        },
-        {
-            "label": "Excluded",
-            "value": str(boundary_report.excluded_rows),
-            "detail": "Outside boundary",
-        },
-        {
-            "label": "Invalid",
-            "value": str(boundary_report.invalid_rows),
-            "detail": "Missing coordinates",
-        },
-        {
-            "label": "Refined Rows",
-            "value": str(report.output_rows),
-            "detail": "Rows written",
-        },
-    ]
-    if recovery_report.missing_rows:
-        auto_recovered = max(recovery_report.recovered_rows - recovery_report.approved_rows, 0)
-        metrics.extend(
-            [
-                {
-                    "label": "Recovered Coords",
-                    "value": str(recovery_report.recovered_rows),
-                    "detail": "Auto-filled plus approved review decisions",
-                },
-                {
-                    "label": "Review Needed",
-                    "value": str(recovery_report.review_rows),
-                    "detail": "Rows written to coordinate review output",
-                },
-                {
-                    "label": "Rejected Review",
-                    "value": str(recovery_report.rejected_rows),
-                    "detail": "Rows kept out of the refined data by explicit review rejection",
-                },
-                {
-                    "label": "Primary Review",
-                    "value": str(recovery_report.primary_review_rows),
-                    "detail": "Likely in-project review rows",
-                },
-                {
-                    "label": "Secondary Bucket",
-                    "value": str(recovery_report.secondary_review_rows),
-                    "detail": "Lower-likelihood rows kept out of the main queue",
-                },
-            ]
-        )
-        if auto_recovered:
-            metrics.append(
-                {
-                    "label": "Auto Recovered",
-                    "value": str(auto_recovered),
-                    "detail": "Rows filled without manual review",
-                }
-            )
-        if recovery_report.approved_rows:
-            metrics.append(
-                {
-                    "label": "Review Applied",
-                    "value": str(recovery_report.approved_rows),
-                    "detail": "Rows filled from approved workbook decisions",
-                }
-            )
-    if kmz_count is not None:
-        metrics.append({
-            "label": "KMZ Placemarks",
-            "value": str(kmz_count),
-            "detail": "Crash map markers",
-        })
-    if state.started_at and state.finished_at:
-        metrics.append({
-            "label": "Run Duration",
-            "value": _format_duration(state.started_at, state.finished_at),
-            "detail": "Pipeline runtime",
-        })
-    return {
-        "metrics": metrics,
-    }
+    return build_web_run_summary(
+        run_duration=_format_duration(state.started_at, state.finished_at),
+        report=report,
+        boundary_report=boundary_report,
+        recovery_report=recovery_report,
+        output_counts=RunOutputCounts(
+            refined_rows=report.output_rows,
+            invalid_rows=boundary_report.invalid_rows,
+            coordinate_review_rows=coordinate_review_count,
+            rejected_review_rows=rejected_review_count,
+        ),
+        requested_label_order=requested_label_order,
+        resolved_label_order=resolved_label_order,
+        kmz_count=kmz_count,
+    )
+
+
+def _update_summary_for_relabel(
+    state: RunState,
+    *,
+    requested_label_order: str,
+    resolved_label_order: str,
+    kmz_count: int,
+) -> None:
+    data_name = str((state.inputs or {}).get("dataFile") or "").strip()
+    if not state.output_dir or not data_name:
+        raise ValueError("This run is missing the refined output reference.")
+    refined_path = refined_output_path(state.output_dir, data_name)
+    state.summary = refresh_web_run_summary_for_relabel(
+        state.summary,
+        refined_path=refined_path,
+        requested_label_order=requested_label_order,
+        resolved_label_order=resolved_label_order,
+        run_duration=_format_duration(state.started_at, state.finished_at),
+        kmz_count=kmz_count,
+    )
 
 
 @app.route("/")
@@ -525,7 +214,6 @@ def preview_map() -> Any:
     kmz_upload = request.files.get("boundary_file")
     lat_column = request.form.get("lat_column", "").strip()
     lon_column = request.form.get("lon_column", "").strip()
-
     if data_upload is None or not data_upload.filename:
         return jsonify({"error": "Crash data file is required."}), 400
     if kmz_upload is None or not kmz_upload.filename:
@@ -612,7 +300,7 @@ def start_run() -> Any:
     kmz_upload = request.files.get("boundary_file")
     lat_column = request.form.get("lat_column", "").strip()
     lon_column = request.form.get("lon_column", "").strip()
-    label_order = request.form.get("label_order", "west_to_east").strip() or "west_to_east"
+    label_order = request.form.get("label_order", "auto").strip() or "auto"
 
     if data_upload is None or not data_upload.filename:
         return jsonify({"error": "Crash data file is required."}), 400
@@ -698,6 +386,8 @@ def apply_coordinate_review() -> Any:
     lon_column = request.form.get("lon_column", "").strip()
     label_order = request.form.get("label_order", "").strip()
 
+    if label_order and label_order not in {"auto", "west_to_east", "south_to_north"}:
+        return jsonify({"error": "Invalid label order."}), 400
     if not source_run_id:
         return jsonify({"error": "A previous run is required."}), 400
     if (review_upload is None or not review_upload.filename) and not review_decisions_text:
@@ -713,7 +403,7 @@ def apply_coordinate_review() -> Any:
     kmz_name = str(source_inputs.get("kmzFile") or "").strip()
     lat_column = lat_column or str(source_inputs.get("latColumn") or "").strip()
     lon_column = lon_column or str(source_inputs.get("lonColumn") or "").strip()
-    label_order = label_order or str(source_inputs.get("labelOrder") or "west_to_east").strip() or "west_to_east"
+    label_order = label_order or str(source_inputs.get("labelOrder") or "auto").strip() or "auto"
 
     if not data_name or not kmz_name:
         return jsonify({"error": "Previous run is missing the original crash data or KMZ input."}), 400
@@ -937,8 +627,14 @@ def _run_refinement_job(
             report=result.refinement_report,
             boundary_report=result.boundary_report,
             recovery_report=result.recovery_report,
+            coordinate_review_count=len(result.coordinate_review_rows),
+            rejected_review_count=len(result.rejected_review_rows),
             kmz_count=result.kmz_count,
+            requested_label_order=result.requested_label_order,
+            resolved_label_order=result.resolved_label_order,
         )
+        state.inputs["labelOrder"] = result.requested_label_order
+        state.inputs["resolvedLabelOrder"] = result.resolved_label_order
     except Exception as exc:
         state.status = "error"
         state.error = str(exc)
@@ -947,6 +643,62 @@ def _run_refinement_job(
             if coordinate_review_path is not None or review_decisions
             else "Refinement failed."
         )
+        state.append_log(f"Error: {exc}", level="error")
+    finally:
+        state.finished_at = _utcnow()
+        if state.output_dir:
+            state.outputs = _list_outputs(state.output_dir)
+
+
+def _run_relabel_job(
+    state: RunState,
+    *,
+    refined_path: Path,
+    kmz_path: Path,
+    lat_column: str,
+    lon_column: str,
+    label_order: str,
+    stale_output_paths: List[Path],
+) -> None:
+    state.status = "running"
+    state.error = None
+    state.started_at = _utcnow()
+    state.message = "Regenerating KMZ labels."
+    state.append_log(
+        f"Regenerating KMZ labels using {(label_order or 'auto').replace('_', ' ')} ordering."
+    )
+    try:
+        result = relabel_refined_outputs(
+            refined_path=refined_path,
+            kmz_path=kmz_path,
+            lat_column=lat_column,
+            lon_column=lon_column,
+            label_order=label_order,
+            remove_output_paths=stale_output_paths,
+        )
+        state.status = "success"
+        state.message = "KMZ labels regenerated."
+        state.inputs["labelOrder"] = result.requested_label_order
+        state.inputs["resolvedLabelOrder"] = result.resolved_label_order
+        state.append_log(
+            f"Refined output relabeled {result.resolved_label_order.replace('_', ' ')}."
+        )
+        state.append_log(f"KMZ report regenerated: {result.kmz_path.name} ({result.kmz_count} placemarks)")
+        for removed_path in result.removed_outputs:
+            state.append_log(
+                f"Removed stale output after relabeling: {removed_path.name}"
+            )
+        _update_summary_for_relabel(
+            state,
+            requested_label_order=result.requested_label_order,
+            resolved_label_order=result.resolved_label_order,
+            kmz_count=result.kmz_count,
+        )
+        state.append_log(state.message)
+    except Exception as exc:
+        state.status = "error"
+        state.error = str(exc)
+        state.message = "KMZ relabel failed."
         state.append_log(f"Error: {exc}", level="error")
     finally:
         state.finished_at = _utcnow()
@@ -1002,7 +754,7 @@ def _run_report_job(
 @app.route("/api/run/<run_id>")
 def run_status(run_id: str) -> Any:
     state = _get_state(run_id)
-    return jsonify(state.snapshot())
+    return jsonify(_snapshot_state(state))
 
 
 @app.route("/api/run/<run_id>/review-queue")
@@ -1054,6 +806,51 @@ def run_log(run_id: str) -> Any:
         "status": state.status,
         "message": state.message,
     })
+
+
+@app.route("/api/run/<run_id>/relabel", methods=["POST"])
+def relabel_run_outputs(run_id: str) -> Any:
+    state = _get_state(run_id)
+    if state.status == "running":
+        return jsonify({"error": "This run is still in progress."}), 409
+    if not state.output_dir:
+        return jsonify({"error": "Outputs are unavailable for this run."}), 400
+
+    inputs = dict(state.inputs or {})
+    data_name = str(inputs.get("dataFile") or "").strip()
+    lat_column = str(inputs.get("latColumn") or "").strip()
+    lon_column = str(inputs.get("lonColumn") or "").strip()
+    label_order = request.form.get("label_order", "").strip() or str(inputs.get("labelOrder") or "auto").strip() or "auto"
+    if label_order not in {"auto", "west_to_east", "south_to_north"}:
+        return jsonify({"error": "Invalid label order."}), 400
+    if not data_name or not lat_column or not lon_column:
+        return jsonify({"error": "This run is missing the data file or coordinate columns."}), 400
+
+    refined_path = refined_output_path(state.output_dir, data_name)
+    kmz_path = kmz_output_path(refined_path)
+    if not refined_path.exists():
+        return jsonify({"error": "Refined output for this run was not found."}), 404
+
+    state.inputs["runKind"] = "relabel"
+    stale_output_paths = [
+        pdf_output_path(refined_path),
+        summary_output_path(refined_path),
+    ]
+    thread = threading.Thread(
+        target=_run_relabel_job,
+        kwargs={
+            "state": state,
+            "refined_path": refined_path,
+            "kmz_path": kmz_path,
+            "lat_column": lat_column,
+            "lon_column": lon_column,
+            "label_order": label_order,
+            "stale_output_paths": stale_output_paths,
+        },
+        daemon=True,
+    )
+    thread.start()
+    return jsonify({"runId": state.run_id})
 
 
 @app.route("/api/run/<run_id>/download/<path:filename>")

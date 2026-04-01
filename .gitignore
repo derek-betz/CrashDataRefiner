@@ -6,5 +6,6 @@ crash_data_refiner.egg-info/
 outputs/
 outputs-for-reference/Example Crash Data Summary Page.jpg
 .pytest_cache/
+node_modules/
 API_KEY/
 .env

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 import re
 from typing import Any, Iterable, List, Sequence, Tuple
 import xml.etree.ElementTree as ET
@@ -124,6 +125,21 @@ def parse_coordinate(value: Any) -> float | None:
         return float(text)
     except ValueError:
         return None
+
+
+def is_usable_coordinate_pair(latitude: float | None, longitude: float | None) -> bool:
+    """Return whether *latitude* and *longitude* form a plausible crash location."""
+    if latitude is None or longitude is None:
+        return False
+    if not math.isfinite(latitude) or not math.isfinite(longitude):
+        return False
+    if latitude < -90.0 or latitude > 90.0:
+        return False
+    if longitude < -180.0 or longitude > 180.0:
+        return False
+    if math.isclose(latitude, 0.0, abs_tol=1e-9) and math.isclose(longitude, 0.0, abs_tol=1e-9):
+        return False
+    return True
 
 
 def point_in_polygon(lon: float, lat: float, polygon: PolygonBoundary) -> bool:

@@ -1,4 +1,9 @@
-"""FastAPI wrapper for CrashDataRefiner."""
+"""Compatibility FastAPI wrapper for CrashDataRefiner.
+
+This surface is kept intentionally narrower than the Flask web app. Core
+refinement behavior should stay aligned with the shared service contract so it
+cannot silently drift from the main application.
+"""
 
 from __future__ import annotations
 
@@ -20,6 +25,8 @@ from crash_data_refiner.coordinate_recovery import (
 )
 from crash_data_refiner.geo import load_kmz_polygon
 from crash_data_refiner.refiner import CrashDataRefiner
+from crash_data_refiner.run_contract import build_refine_response_summary
+from crash_data_refiner.services import resolve_label_order
 from crash_data_refiner.spreadsheets import read_spreadsheet
 
 load_dotenv()
@@ -80,7 +87,10 @@ def agent_query(
     tag: str | None = None,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
-    return fetch_knowledge(source=source, topic=topic, tag=tag, limit=limit)
+    try:
+        return fetch_knowledge(source=source, topic=topic, tag=tag, limit=limit)
+    except Exception as exc:  # pragma: no cover - optional integration boundary
+        raise HTTPException(status_code=503, detail=f"Orchestrator knowledge hub unavailable: {exc}") from exc
 
 
 @app.post("/refine")
@@ -90,6 +100,7 @@ async def refine(
     coordinate_review_file: UploadFile | None = File(None),
     lat_column: str | None = Form(None),
     lon_column: str | None = Form(None),
+    label_order: str = Form("auto"),
     sample_limit: int = Form(10),
 ) -> dict[str, Any]:
     if not data_file.filename:
@@ -147,6 +158,12 @@ async def refine(
                 latitude_column=lat_column,
                 longitude_column=lon_column,
             )
+            resolved_label_order = resolve_label_order(
+                refined_rows,
+                lat_column=lat_column,
+                lon_column=lon_column,
+                label_order=label_order,
+            )
         else:
             if review_decisions is not None:
                 if not lat_column or not lon_column:
@@ -165,19 +182,21 @@ async def refine(
             refined_rows, report = refiner.refine_rows(prepared_rows)
             boundary_report = None
             invalid_rows = []
+            resolved_label_order = label_order if label_order in {"west_to_east", "south_to_north"} else "west_to_east"
 
         sample_rows = refined_rows[: max(0, sample_limit)]
         payload = {
             "status": "success",
-            "summary": {
-                "total_rows": report.total_rows,
-                "kept_rows": report.kept_rows,
-                "dropped_missing_required": report.dropped_missing_required,
-                "dropped_duplicates": report.dropped_duplicates,
-                "coerced_dates": report.coerced_dates,
-                "coerced_numbers": report.coerced_numbers,
-                "coerced_booleans": report.coerced_booleans,
-            },
+            "summary": build_refine_response_summary(
+                report=report,
+                boundary_report=boundary_report,
+                invalid_rows=len(invalid_rows),
+                coordinate_review_rows=len(review_rows),
+                rejected_review_rows=0,
+                recovery_report=recovery_report,
+                requested_label_order=label_order,
+                resolved_label_order=resolved_label_order,
+            ),
             "boundary": boundary_report.__dict__ if boundary_report else None,
             "invalid_rows": len(invalid_rows),
             "coordinate_review_rows": len(review_rows),

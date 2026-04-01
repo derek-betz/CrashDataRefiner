@@ -8,7 +8,7 @@ import math
 import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from .geo import PolygonBoundary, parse_coordinate, point_in_polygon
+from .geo import PolygonBoundary, is_usable_coordinate_pair, parse_coordinate, point_in_polygon
 from .normalize import normalize_header
 from .refiner import _standardize_route
 
@@ -293,7 +293,7 @@ def recover_missing_coordinates(
                 row["coordinate_recovery_status"] = "review_rejected"
                 row["coordinate_recovery_confidence"] = "user_rejected"
                 row["coordinate_recovery_note"] = (
-                    manual_decision.note or "Rejected in browser review wizard."
+                    manual_decision.note or "Excluded from project in browser review workbench."
                 )
                 output_rows.append(row)
                 rejected_rows += 1
@@ -331,10 +331,15 @@ def recover_missing_coordinates(
         row["coordinate_source"] = "missing"
         if suggestion:
             _apply_suggestion_metadata(row, suggestion, status="review_required", group_key=group_key)
-            row["suggested_latitude"] = round(suggestion.latitude, 6)
-            row["suggested_longitude"] = round(suggestion.longitude, 6)
-            row["suggested_inside_boundary"] = suggestion.inside_boundary
-            suggested_rows += 1
+            if _is_surfaceable_review_suggestion(
+                suggestion.latitude,
+                suggestion.longitude,
+                suggestion.inside_boundary,
+            ):
+                row["suggested_latitude"] = round(suggestion.latitude, 6)
+                row["suggested_longitude"] = round(suggestion.longitude, 6)
+                row["suggested_inside_boundary"] = suggestion.inside_boundary
+                suggested_rows += 1
         else:
             row["coordinate_recovery_status"] = "no_match"
             row["coordinate_recovery_method"] = ""
@@ -410,6 +415,14 @@ def load_coordinate_review_decisions(
         approved_lon = parse_coordinate(row.get("approved_longitude"))
         suggested_lat = parse_coordinate(row.get("suggested_latitude"))
         suggested_lon = parse_coordinate(row.get("suggested_longitude"))
+        suggested_inside_boundary = _parse_optional_bool(row.get("suggested_inside_boundary"))
+        if not _is_surfaceable_review_suggestion(
+            suggested_lat,
+            suggested_lon,
+            suggested_inside_boundary,
+        ):
+            suggested_lat = None
+            suggested_lon = None
 
         if approved is False:
             continue
@@ -487,6 +500,14 @@ def build_coordinate_review_queue(
         sample_ids = [sample_id for sample_id in (_row_identifier(row) for row in group_rows) if sample_id][:3]
         suggested_lat = parse_coordinate(first.get("suggested_latitude"))
         suggested_lon = parse_coordinate(first.get("suggested_longitude"))
+        suggested_inside_boundary = _parse_optional_bool(first.get("suggested_inside_boundary"))
+        if not _is_surfaceable_review_suggestion(
+            suggested_lat,
+            suggested_lon,
+            suggested_inside_boundary,
+        ):
+            suggested_lat = None
+            suggested_lon = None
         group_size = int(first.get("coordinate_recovery_group_size") or len(group_rows))
         confidence = str(first.get("coordinate_recovery_confidence") or "none")
         review_bucket = str(first.get("project_relevance_bucket") or PROJECT_RELEVANCE_BUCKET_PRIMARY)
@@ -580,6 +601,14 @@ def build_coordinate_review_wizard_steps(
         review_score = int(row.get("project_relevance_score") or 0)
         group_size = int(row.get("coordinate_recovery_group_size") or 1)
         suggested_inside_boundary = _parse_optional_bool(row.get("suggested_inside_boundary"))
+        if not _is_surfaceable_review_suggestion(
+            suggested_lat,
+            suggested_lon,
+            suggested_inside_boundary,
+        ):
+            suggested_lat = None
+            suggested_lon = None
+            suggested_inside_boundary = None
 
         steps.append(
             {
@@ -661,7 +690,7 @@ def _build_evidence(
     for row in rows:
         lat = parse_coordinate(row.get(lat_key))
         lon = parse_coordinate(row.get(lon_key))
-        if lat is None or lon is None:
+        if not is_usable_coordinate_pair(lat, lon):
             continue
         coord = (lat, lon)
         for mode in MODE_ORDER:
@@ -693,7 +722,7 @@ def _build_project_relevance_profile(
     for row in rows:
         lat = parse_coordinate(row.get(lat_key))
         lon = parse_coordinate(row.get(lon_key))
-        if lat is None or lon is None:
+        if not is_usable_coordinate_pair(lat, lon):
             continue
 
         route_signal = _relevance_route_signal(row)
@@ -1101,6 +1130,14 @@ def _select_suggestion(
             best_review_suggestion = suggestion
 
     return best_review_suggestion
+
+
+def _is_surfaceable_review_suggestion(
+    latitude: float | None,
+    longitude: float | None,
+    inside_boundary: Optional[bool],
+) -> bool:
+    return is_usable_coordinate_pair(latitude, longitude) and inside_boundary is not False
 
 
 def _build_suggestion(

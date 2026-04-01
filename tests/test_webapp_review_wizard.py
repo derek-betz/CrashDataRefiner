@@ -3,9 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 import json
+import time
 import zipfile
 
-from crash_data_refiner.services import coordinate_review_output_path, refined_output_path
+from crash_data_refiner.services import coordinate_review_output_path, pdf_output_path, refined_output_path
 from crash_data_refiner.spreadsheets import write_spreadsheet
 from crash_data_refiner.webapp import (
     RUNS,
@@ -67,7 +68,7 @@ def test_parse_review_decisions_payload_accepts_row_level_apply_and_reject() -> 
     assert decisions["4__row5"].action == "reject"
     assert decisions["4__row5"].latitude is None
     assert decisions["4__row5"].longitude is None
-    assert decisions["4__row5"].note == "Rejected in browser review wizard."
+    assert decisions["4__row5"].note == "Excluded from project in browser review workbench."
 
 
 def test_run_review_wizard_endpoint_returns_steps_and_map_data(tmp_path: Path) -> None:
@@ -172,6 +173,97 @@ def test_run_review_wizard_endpoint_returns_steps_and_map_data(tmp_path: Path) -
         assert data["mapData"]["pointCount"] == 1
         assert data["mapData"]["points"] == [[1.0, 0.0]]
         assert len(data["mapData"]["polygon"]) == 1
+    finally:
+        with RUNS_LOCK:
+            RUNS.pop(run_id, None)
+
+
+def test_relabel_endpoint_rewrites_outputs_and_removes_stale_pdf(tmp_path: Path) -> None:
+    run_id = "relabeltest123"
+    output_dir = tmp_path / run_id
+    input_dir = output_dir / "inputs"
+    input_dir.mkdir(parents=True)
+
+    data_name = "crashes.csv"
+    kmz_name = "boundary.kmz"
+    _write_test_kmz(input_dir / kmz_name)
+
+    refined_path = refined_output_path(output_dir, data_name)
+    write_spreadsheet(
+        str(refined_path),
+        [
+            {"crash_id": "3", "lat": 40.0, "lon": -86.0, "kmz_label": 3},
+            {"crash_id": "1", "lat": 30.0, "lon": -86.0, "kmz_label": 1},
+            {"crash_id": "2", "lat": 35.0, "lon": -86.0, "kmz_label": 2},
+        ],
+    )
+    stale_pdf = pdf_output_path(refined_path)
+    stale_pdf.write_bytes(b"%PDF-1.4\n")
+
+    state = RunState(run_id=run_id, created_at=datetime.now(timezone.utc), output_dir=output_dir)
+    state.status = "success"
+    state.inputs = {
+        "runKind": "refine",
+        "dataFile": data_name,
+        "kmzFile": kmz_name,
+        "latColumn": "Lat",
+        "lonColumn": "Lon",
+        "labelOrder": "auto",
+    }
+    with RUNS_LOCK:
+        RUNS[run_id] = state
+
+    try:
+        with app.test_client() as client:
+            response = client.post(
+                f"/api/run/{run_id}/relabel",
+                data={"label_order": "south_to_north"},
+            )
+        assert response.status_code == 200
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if state.status != "running":
+                break
+            time.sleep(0.05)
+
+        assert state.status == "success"
+        assert state.inputs["runKind"] == "relabel"
+        assert state.inputs["labelOrder"] == "south_to_north"
+        assert state.inputs["resolvedLabelOrder"] == "south_to_north"
+        assert not stale_pdf.exists()
+        assert "labelOrdering" in state.summary
+        assert state.summary["labelOrdering"]["resolved"] == "south_to_north"
+    finally:
+        with RUNS_LOCK:
+            RUNS.pop(run_id, None)
+
+
+def test_relabel_endpoint_returns_404_when_refined_output_is_missing(tmp_path: Path) -> None:
+    run_id = "relabelmissing123"
+    output_dir = tmp_path / run_id
+    output_dir.mkdir(parents=True)
+
+    state = RunState(run_id=run_id, created_at=datetime.now(timezone.utc), output_dir=output_dir)
+    state.status = "success"
+    state.inputs = {
+        "runKind": "refine",
+        "dataFile": "missing.csv",
+        "kmzFile": "boundary.kmz",
+        "latColumn": "Lat",
+        "lonColumn": "Lon",
+        "labelOrder": "auto",
+    }
+    with RUNS_LOCK:
+        RUNS[run_id] = state
+
+    try:
+        with app.test_client() as client:
+            response = client.post(
+                f"/api/run/{run_id}/relabel",
+                data={"label_order": "south_to_north"},
+            )
+        assert response.status_code == 404
+        assert "Refined output for this run was not found." in response.get_json()["error"]
     finally:
         with RUNS_LOCK:
             RUNS.pop(run_id, None)

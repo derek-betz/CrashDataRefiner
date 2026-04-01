@@ -1,0 +1,117 @@
+name: QC
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: qc-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    name: Pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Run pytest
+        run: python -m pytest tests -W error::DeprecationWarning
+
+  reference-datasets:
+    name: Reference Dataset QC
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: pytest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Run reference dataset QC
+        run: python scripts/qc_reference_datasets.py
+
+      - name: Upload dataset QC artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dataset-qc
+          path: outputs/dataset_qc/**
+          if-no-files-found: ignore
+
+  browser-smoke:
+    name: Browser Smoke QC
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: pytest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run browser smoke QC
+        shell: bash
+        run: |
+          mkdir -p outputs
+          python -m crash_data_refiner.webapp --host 127.0.0.1 --port 8090 > outputs/qc_browser_server.log 2>&1 &
+          WEB_PID=$!
+          trap "kill $WEB_PID" EXIT
+          npm run qc:web
+
+      - name: Upload browser QC artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-qc
+          path: |
+            outputs/qc_browser_smoke/**
+            outputs/qc_browser_server.log
+          if-no-files-found: ignore

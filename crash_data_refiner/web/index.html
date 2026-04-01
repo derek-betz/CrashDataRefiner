@@ -17,223 +17,333 @@
     <div class="grid"></div>
     <div class="scanline"></div>
     <div class="app">
-      <aside class="sidebar">
-        <div class="sidebar-inner">
-          <div class="section" style="--delay: 0.05s">
-            <div class="section-title">Project Inputs</div>
+      <main class="main">
+        <header class="hero app-hero">
+          <div class="hero-content">
+            <h1>Crash Data Refiner</h1>
+            <p>Guided crash-data refinement for roadway project review.</p>
+          </div>
+          <button class="btn ghost" id="open-guide">Workflow guide</button>
+        </header>
 
-            <label class="field-label">Crash Data File</label>
-            <div class="drop-zone" id="data-drop">
-              <div class="drop-icon">
-                <svg viewBox="0 0 64 48" aria-hidden="true">
-                  <path d="M8 8h22l8 8h18a6 6 0 0 1 6 6v14a6 6 0 0 1-6 6H8a6 6 0 0 1-6-6V14a6 6 0 0 1 6-6z" />
-                </svg>
-              </div>
-              <div class="drop-title" id="data-label">Drop crash data (CSV or Excel)</div>
-              <div class="drop-subtitle" id="data-hint">Drag a file here or click to browse.</div>
-              <input id="data-input" type="file" accept=".csv,.xlsx,.xlsm" />
+        <section class="status-bar workflow-status" id="status-bar" data-state="idle">
+          <div class="status-indicator" id="status-indicator"></div>
+          <div class="workflow-status-main">
+            <nav class="stage-stepper" aria-label="Workflow steps">
+              <button class="stage-step is-active" id="stage-step-inputs" type="button" data-stage-target="inputs">
+                <span class="stage-step-number">1</span>
+                <span class="stage-step-label">Inputs</span>
+              </button>
+              <button class="stage-step" id="stage-step-review" type="button" data-stage-target="review" disabled>
+                <span class="stage-step-number">2</span>
+                <span class="stage-step-label">Review</span>
+              </button>
+              <button class="stage-step" id="stage-step-results" type="button" data-stage-target="results" disabled>
+                <span class="stage-step-number">3</span>
+                <span class="stage-step-label">Results</span>
+              </button>
+            </nav>
+            <div class="workflow-headline">
+              <div class="workflow-kicker" id="stage-kicker">Step 1 of 3</div>
+              <h2 class="workflow-title" id="stage-title">Load the project files</h2>
+              <p class="workflow-description" id="stage-description">
+                Add the crash spreadsheet, boundary KMZ, and coordinate columns before running refinement.
+              </p>
             </div>
-
-            <label class="field-label">Relevance Boundary (KMZ)</label>
-            <div class="drop-zone compact" id="kmz-drop">
-              <div class="drop-icon">
-                <svg viewBox="0 0 64 48" aria-hidden="true">
-                  <path d="M10 6h26l8 8h10a4 4 0 0 1 4 4v20a6 6 0 0 1-6 6H10a6 6 0 0 1-6-6V12a6 6 0 0 1 6-6z" />
-                </svg>
+            <div class="status-text">
+              <div class="status-title" id="status-title">Ready to run</div>
+              <div class="status-detail" id="status-detail">
+                Add crash data and a KMZ polygon to begin refinement.
               </div>
-              <div class="drop-title" id="kmz-label">Drop KMZ polygon boundary</div>
-              <div class="drop-subtitle" id="kmz-hint">Must contain exactly one polygon.</div>
-              <input id="kmz-input" type="file" accept=".kmz" />
+            </div>
+            <div class="workflow-files" id="stage-files"></div>
+            <div class="workflow-next" id="stage-next">
+              Next: load the crash spreadsheet, boundary KMZ, and coordinate columns.
+            </div>
+            <div class="workflow-runtime">
+              <div class="snapshot-pill" id="snapshot-tag">Idle</div>
+              <div class="snapshot-value" id="snapshot-status">Waiting for inputs.</div>
+              <div class="snapshot-value" id="snapshot-last-run">No runs yet.</div>
             </div>
           </div>
-
-          <div class="section" style="--delay: 0.1s">
-            <div class="section-title">Coordinate Columns</div>
-            <label class="field-label" for="lat-column">Latitude Column</label>
-            <input
-              id="lat-column"
-              class="field input"
-              list="column-options"
-              placeholder="Select or type latitude column"
-            />
-
-            <label class="field-label" for="lon-column">Longitude Column</label>
-            <input
-              id="lon-column"
-              class="field input"
-              list="column-options"
-              placeholder="Select or type longitude column"
-            />
-            <label class="field-label" for="label-order">KMZ Label Order</label>
-            <select id="label-order" class="field input">
-              <option value="west_to_east">Left to right (west to east)</option>
-              <option value="south_to_north">Bottom to top (south to north)</option>
-            </select>
-            <datalist id="column-options"></datalist>
-            <div class="hint" id="column-hint">Upload crash data to populate column options.</div>
-          </div>
-
-          <div class="section" style="--delay: 0.15s">
-            <div class="section-title">Report Outputs</div>
-            <label class="field-label">PDF Report Data (optional)</label>
-            <div class="drop-zone compact" id="pdf-drop">
-              <div class="drop-icon">
-                <svg viewBox="0 0 64 48" aria-hidden="true">
-                  <path d="M8 10a6 6 0 0 1 6-6h20l6 6h16a6 6 0 0 1 6 6v18a6 6 0 0 1-6 6H8a6 6 0 0 1-6-6V10z" />
-                </svg>
-              </div>
-              <div class="drop-title" id="pdf-label">Drop alternate PDF data file</div>
-              <div class="drop-subtitle" id="pdf-hint">Leave blank to use refined output when available.</div>
-              <input id="pdf-input" type="file" accept=".csv,.xlsx,.xlsm" />
-            </div>
-            <div class="actions inline">
-              <button class="btn secondary small" id="generate-report" disabled>Generate PDF Crash Report</button>
-            </div>
-            <label class="field-label">Reviewed Coordinate Workbook</label>
-            <div class="drop-zone compact" id="review-drop">
-              <div class="drop-icon">
-                <svg viewBox="0 0 64 48" aria-hidden="true">
-                  <path d="M8 10a6 6 0 0 1 6-6h20l6 6h16a6 6 0 0 1 6 6v18a6 6 0 0 1-6 6H8a6 6 0 0 1-6-6V10z" />
-                </svg>
-              </div>
-              <div class="drop-title" id="review-label">Drop reviewed Coordinate Recovery workbook</div>
-              <div class="drop-subtitle" id="review-hint">Download, fill approved coordinates, then upload it here.</div>
-              <input id="review-input" type="file" accept=".csv,.xlsx,.xlsm" />
-            </div>
-            <div class="actions inline">
-              <button class="btn secondary small" id="apply-review" disabled>Apply Coordinate Decisions</button>
+          <div class="workflow-progress">
+            <div class="progress">
+              <div class="progress-bar" id="progress-bar"></div>
             </div>
             <div class="progress report-progress" id="report-progress">
               <div class="progress-bar"></div>
             </div>
           </div>
-
-          <div class="section" style="--delay: 0.2s">
-            <div class="section-title">Progress</div>
-            <div class="progress">
-              <div class="progress-bar" id="progress-bar"></div>
-            </div>
-          </div>
-        </div>
-      </aside>
-
-      <main class="main">
-        <header class="hero">
-          <div class="hero-content">
-            <h1>Crash Data Refiner</h1>
-            <p>Filter raw crash exports, map boundaries, and publish polished reports.</p>
-          </div>
-          <button class="btn ghost" id="open-guide">Workflow Guide</button>
-        </header>
-
-        <section class="status-bar" id="status-bar" data-state="idle">
-          <div class="status-indicator" id="status-indicator"></div>
-          <div class="status-text">
-            <div class="status-title" id="status-title">Ready to run</div>
-            <div class="status-detail" id="status-detail">
-              Add crash data and a KMZ polygon to begin refinement.
-            </div>
-          </div>
-          <div class="status-hint">All run activity streams into the log.</div>
         </section>
 
-        <section class="content">
-          <div class="left-col">
-            <div class="card" style="--delay: 0.3s">
-              <div class="card-header">
-                <div>
-                  <div class="card-title">Map Preview</div>
-                  <div class="card-subtitle" id="map-subtitle">
-                    Project map preview and crash placement canvas.
+        <section class="stage-stack">
+          <section class="stage-view is-active" id="stage-view-inputs" data-stage-view="inputs">
+            <div class="inputs-grid">
+              <div class="card" style="--delay: 0.04s">
+                <div class="card-title">Project files</div>
+                <div class="card-subtitle">Start by loading the crash spreadsheet and the project boundary KMZ.</div>
+
+                <label class="field-label">Crash spreadsheet</label>
+                <div class="drop-zone" id="data-drop">
+                  <div class="drop-icon">
+                    <svg viewBox="0 0 64 48" aria-hidden="true">
+                      <path d="M8 8h22l8 8h18a6 6 0 0 1 6 6v14a6 6 0 0 1-6 6H8a6 6 0 0 1-6-6V14a6 6 0 0 1 6-6z" />
+                    </svg>
+                  </div>
+                  <div class="drop-title" id="data-label">Drop crash spreadsheet</div>
+                  <div class="drop-subtitle" id="data-hint">Drag a CSV or Excel file here, or click to browse.</div>
+                  <input id="data-input" type="file" accept=".csv,.xlsx,.xlsm" />
+                </div>
+
+                <label class="field-label">Project boundary KMZ</label>
+                <div class="drop-zone compact" id="kmz-drop">
+                  <div class="drop-icon">
+                    <svg viewBox="0 0 64 48" aria-hidden="true">
+                      <path d="M10 6h26l8 8h10a4 4 0 0 1 4 4v20a6 6 0 0 1-6 6H10a6 6 0 0 1-6-6V12a6 6 0 0 1 6-6z" />
+                    </svg>
+                  </div>
+                  <div class="drop-title" id="kmz-label">Drop project boundary KMZ</div>
+                  <div class="drop-subtitle" id="kmz-hint">The KMZ must contain exactly one polygon.</div>
+                  <input id="kmz-input" type="file" accept=".kmz" />
+                </div>
+              </div>
+
+              <div class="card" style="--delay: 0.08s">
+                <div class="card-title">Coordinate columns</div>
+                <div class="card-subtitle">Confirm the latitude and longitude columns before you run the filter.</div>
+
+                <label class="field-label" for="lat-column">Latitude column</label>
+                <input
+                  id="lat-column"
+                  class="field input"
+                  list="column-options"
+                  placeholder="Select or type the latitude column"
+                />
+
+                <label class="field-label" for="lon-column">Longitude column</label>
+                <input
+                  id="lon-column"
+                  class="field input"
+                  list="column-options"
+                  placeholder="Select or type the longitude column"
+                />
+
+                <label class="field-label" for="label-order">KMZ numbering direction</label>
+                <select id="label-order" class="field input">
+                  <option value="auto">Automatic (recommended)</option>
+                  <option value="west_to_east">Left to right (west to east)</option>
+                  <option value="south_to_north">Bottom to top (south to north)</option>
+                </select>
+                <datalist id="column-options"></datalist>
+                <div class="hint" id="column-hint">Upload crash data to populate the available column choices.</div>
+                <div class="hint" id="label-order-hint">Automatic mode chooses the dominant spread direction and breaks ties west to east.</div>
+              </div>
+
+              <div class="card readiness-card" style="--delay: 0.12s">
+                <div class="card-title">Ready to run?</div>
+                <div class="card-subtitle">These three items must be ready before refinement can begin.</div>
+                <div class="readiness-list">
+                  <div class="readiness-item" id="check-data-status">
+                    <span class="readiness-dot"></span>
+                    <div>
+                      <div class="readiness-title">Crash spreadsheet loaded</div>
+                      <div class="readiness-detail">No crash spreadsheet selected yet.</div>
+                    </div>
+                  </div>
+                  <div class="readiness-item" id="check-kmz-status">
+                    <span class="readiness-dot"></span>
+                    <div>
+                      <div class="readiness-title">Project boundary loaded</div>
+                      <div class="readiness-detail">No project boundary KMZ selected yet.</div>
+                    </div>
+                  </div>
+                  <div class="readiness-item" id="check-columns-status">
+                    <span class="readiness-dot"></span>
+                    <div>
+                      <div class="readiness-title">Coordinate columns confirmed</div>
+                      <div class="readiness-detail">Select the latitude and longitude columns.</div>
+                    </div>
                   </div>
                 </div>
-                <div class="map-mode" id="map-mode">Project Map</div>
-              </div>
-              <div class="map-frame">
-                <div class="wizard-map" id="wizard-map" hidden></div>
-                <iframe title="Map report preview" id="map-frame"></iframe>
-                <div class="map-placeholder" id="map-placeholder">
-                  Map preview appears after crash data and boundary files are loaded.
+                <div class="summary-grid">
+                  <div class="summary-label">Crash spreadsheet</div>
+                  <div class="summary-value" id="summary-data">No file selected.</div>
+                  <div class="summary-label">Project boundary</div>
+                  <div class="summary-value" id="summary-kmz">No boundary selected.</div>
+                  <div class="summary-label">Columns</div>
+                  <div class="summary-value" id="summary-columns">Latitude / Longitude not set.</div>
+                </div>
+                <div class="actions">
+                  <button class="btn primary" id="run-refine" disabled>Run refinement</button>
+                  <button class="btn secondary" id="clear-session">Start over</button>
                 </div>
               </div>
-              <div class="wizard-map-toolbar" id="wizard-map-toolbar" hidden>
-                <div class="wizard-map-selection" id="wizard-map-selection">
-                  Pick a likely crash from the review wizard to activate map placement.
-                </div>
-                <button class="btn secondary small" id="clear-map-selection" disabled>Clear Pick</button>
-              </div>
-              <div class="actions inline">
-                <button class="btn secondary small" id="open-map" disabled>Open Project Map Preview</button>
-              </div>
-            </div>
 
-            <div class="card review-card" style="--delay: 0.33s">
-              <div class="card-header">
-                <div>
-                  <div class="card-title">Coordinate Review Wizard</div>
-                  <div class="card-subtitle" id="review-queue-subtitle">
-                    Step through likely unplaced crashes one at a time.
+              <details class="card disclosure-card" id="advanced-tools-panel" style="--delay: 0.16s">
+                <summary class="disclosure-summary">Optional output tools</summary>
+                <div class="disclosure-body">
+                  <div class="card-subtitle">Use these only when you need an alternate PDF source or a reviewed workbook.</div>
+
+                  <label class="field-label">Alternate PDF source file</label>
+                  <div class="drop-zone compact" id="pdf-drop">
+                    <div class="drop-icon">
+                      <svg viewBox="0 0 64 48" aria-hidden="true">
+                        <path d="M8 10a6 6 0 0 1 6-6h20l6 6h16a6 6 0 0 1 6 6v18a6 6 0 0 1-6 6H8a6 6 0 0 1-6-6V10z" />
+                      </svg>
+                    </div>
+                    <div class="drop-title" id="pdf-label">Drop alternate PDF data file</div>
+                    <div class="drop-subtitle" id="pdf-hint">Leave blank to use the refined output when available.</div>
+                    <input id="pdf-input" type="file" accept=".csv,.xlsx,.xlsm" />
+                  </div>
+
+                  <label class="field-label">Reviewed coordinate workbook</label>
+                  <div class="drop-zone compact" id="review-drop">
+                    <div class="drop-icon">
+                      <svg viewBox="0 0 64 48" aria-hidden="true">
+                        <path d="M8 10a6 6 0 0 1 6-6h20l6 6h16a6 6 0 0 1 6 6v18a6 6 0 0 1-6 6H8a6 6 0 0 1-6-6V10z" />
+                      </svg>
+                    </div>
+                    <div class="drop-title" id="review-label">Drop reviewed coordinate workbook</div>
+                    <div class="drop-subtitle" id="review-hint">Download, review, then upload the workbook here.</div>
+                    <input id="review-input" type="file" accept=".csv,.xlsx,.xlsm" />
+                  </div>
+
+                  <div class="advanced-actions">
+                    <button class="btn secondary small" id="generate-report" disabled>Generate PDF crash report</button>
+                    <button class="btn secondary small" id="apply-review" disabled>Apply workbook decisions</button>
                   </div>
                 </div>
-                <button class="btn secondary small" id="apply-browser-review" disabled>Apply Reviewed Crashes</button>
-              </div>
-              <div class="review-summary" id="review-summary">
-                No likely crash-review items loaded yet.
-              </div>
-              <div class="review-list empty" id="review-list">
-                Run refinement to populate the crash placement wizard.
-              </div>
+              </details>
             </div>
-          </div>
+          </section>
 
-          <div class="right-col">
-            <div class="card" style="--delay: 0.25s">
-              <div class="card-title">Run Refinement</div>
-              <div class="summary-grid">
-                <div class="summary-label">Crash data</div>
-                <div class="summary-value" id="summary-data">No file selected.</div>
-                <div class="summary-label">KMZ boundary</div>
-                <div class="summary-value" id="summary-kmz">No boundary selected.</div>
-                <div class="summary-label">Columns</div>
-                <div class="summary-value" id="summary-columns">Latitude / Longitude not set.</div>
-              </div>
-              <div class="actions">
-                <button class="btn primary" id="run-refine" disabled>Run Refinement</button>
-                <button class="btn secondary" id="clear-session">Clear Session</button>
-              </div>
-            </div>
-
-            <div class="card log-card" style="--delay: 0.35s">
-              <div class="card-header">
-                <div>
-                  <div class="card-title">Run Log</div>
-                  <div class="card-subtitle">Pipeline activity, warnings, and results.</div>
+          <section class="stage-view" id="stage-view-review" data-stage-view="review">
+            <div class="review-mode-shell">
+              <div class="review-stage-strip card">
+                <div class="review-stage-progress">
+                  <div class="review-stage-count" id="review-stage-count">Crash review</div>
+                  <div class="review-stage-totals" id="review-stage-totals">No review items loaded yet.</div>
                 </div>
-                <button class="btn secondary small" id="pop-log">Pop out</button>
+                <div class="review-stage-note" id="review-stage-note">
+                  Review likely crashes one at a time, confirm the location, or exclude the crash from the project.
+                </div>
+                <button class="btn primary" id="apply-browser-review" disabled>Apply review decisions</button>
               </div>
-              <div class="log-window" id="run-log"></div>
-            </div>
 
-            <div class="card snapshot-card" style="--delay: 0.4s">
-              <div class="card-title">Run Snapshot</div>
-              <div class="snapshot-pill" id="snapshot-tag">Idle</div>
-              <div class="snapshot-grid">
-                <div class="snapshot-label">Status</div>
-                <div class="snapshot-value" id="snapshot-status">Waiting for inputs.</div>
-                <div class="snapshot-label">Last run</div>
-                <div class="snapshot-value" id="snapshot-last-run">No runs yet.</div>
-              </div>
-              <div class="metrics" id="metrics"></div>
-              <div class="outputs">
-                <div class="outputs-title">Outputs</div>
-                <div class="output-links" id="output-links">No outputs yet.</div>
+              <div class="card review-workbench-card" style="--delay: 0.2s">
+                <div class="card-header review-workbench-header">
+                  <div>
+                    <div class="card-title">Current crash</div>
+                    <div class="card-subtitle" id="review-queue-subtitle">
+                      Step through likely unplaced crashes one at a time.
+                    </div>
+                  </div>
+                </div>
+                <div class="review-summary" id="review-summary">
+                  No likely crash-review items loaded yet.
+                </div>
+                <div class="review-workbench-tabs" id="review-workbench-tabs">
+                  <button class="btn secondary small is-active" id="review-tab-map" type="button" data-review-tab="map">Map</button>
+                  <button class="btn secondary small" id="review-tab-details" type="button" data-review-tab="details">Crash details</button>
+                </div>
+                <div class="review-workbench" id="review-workbench" data-active-tab="map">
+                  <div class="review-pane review-pane-map">
+                    <div class="map-pane-header">
+                      <div>
+                        <div class="map-pane-title">Placement map</div>
+                        <div class="card-subtitle" id="map-subtitle">
+                          Inspect the suggested point or place the crash on the map.
+                        </div>
+                      </div>
+                      <div class="map-pane-actions">
+                        <div class="map-mode" id="map-mode">Project map</div>
+                        <button class="btn secondary small" id="open-map" disabled>Open full map preview</button>
+                      </div>
+                    </div>
+                    <div class="map-frame">
+                      <div class="wizard-map" id="wizard-map" hidden></div>
+                      <iframe title="Map report preview" id="map-frame"></iframe>
+                      <div class="map-placeholder" id="map-placeholder">
+                        The map appears here once review begins.
+                      </div>
+                    </div>
+                    <div class="wizard-map-toolbar" id="wizard-map-toolbar" hidden>
+                      <div class="wizard-map-selection" id="wizard-map-selection">
+                        Pick a likely crash from the review workbench to activate map placement.
+                      </div>
+                      <button class="btn secondary small" id="clear-map-selection" disabled>Discard map pin</button>
+                    </div>
+                  </div>
+                  <div class="review-pane review-pane-details">
+                    <div class="review-list empty" id="review-list">
+                      Run refinement to populate the crash placement workbench.
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
+          </section>
+
+          <section class="stage-view" id="stage-view-results" data-stage-view="results">
+            <div class="results-shell">
+              <div class="card results-overview-card" style="--delay: 0.04s">
+                <div class="card-title">Results</div>
+                <div class="results-summary-line" id="results-summary-line">
+                  Run refinement to create project outputs.
+                </div>
+                <div class="results-actions">
+                  <button class="btn primary" id="results-generate-report" disabled>Generate PDF crash report</button>
+                  <button class="btn secondary" id="results-open-map" disabled>Open project map preview</button>
+                  <button class="btn secondary" id="results-resume-review" hidden>Resume review</button>
+                </div>
+                <div class="results-relabel">
+                  <div class="results-relabel-copy">
+                    <div class="results-relabel-title">KMZ numbering direction</div>
+                    <div class="results-relabel-detail" id="results-label-order-status">
+                      Automatic mode chooses the label direction for this run.
+                    </div>
+                  </div>
+                  <div class="results-relabel-controls">
+                    <select id="results-label-order" class="field input">
+                      <option value="auto">Automatic (recommended)</option>
+                      <option value="west_to_east">Left to right (west to east)</option>
+                      <option value="south_to_north">Bottom to top (south to north)</option>
+                    </select>
+                    <button class="btn secondary" id="results-relabel" disabled>Regenerate labels</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="results-grid">
+                <div class="card outputs-card" style="--delay: 0.08s">
+                  <div class="card-title">Primary outputs</div>
+                  <div class="card-subtitle">Start with the refined crash file, the KMZ, and any review exports you still need.</div>
+                  <div class="output-links" id="output-links">No outputs yet.</div>
+                </div>
+
+                <details class="card disclosure-card technical-details-card" id="technical-details" style="--delay: 0.12s">
+                  <summary class="disclosure-summary">View technical details</summary>
+                  <div class="disclosure-body">
+                    <div class="metrics" id="metrics"></div>
+                    <div class="card log-card technical-log-card">
+                      <div class="card-header">
+                        <div>
+                          <div class="card-title">Run log</div>
+                          <div class="card-subtitle">Pipeline activity, warnings, and results.</div>
+                        </div>
+                        <button class="btn secondary small" id="pop-log">Pop out</button>
+                      </div>
+                      <div class="log-window" id="run-log"></div>
+                    </div>
+                  </div>
+                </details>
+              </div>
+            </div>
+          </section>
         </section>
 
         <footer class="footer">
-          <button class="link" id="open-notes">Output Notes</button>
+          <button class="link" id="open-notes">Output notes</button>
           <div class="footer-note">Outputs are stored under outputs/web_runs.</div>
         </footer>
       </main>
@@ -247,19 +357,18 @@
       <div class="modal-body">
         <h3>Quick start checklist</h3>
         <ol>
-          <li>Drop the crash data CSV or Excel file into Project Inputs.</li>
-          <li>Drop the KMZ boundary (single polygon required).</li>
-          <li>Confirm latitude and longitude columns are correct.</li>
-          <li>Run refinement and track progress in the Run Log.</li>
-          <li>Review likely unplaced crashes in the browser wizard, or use the Coordinate Recovery workbook if you prefer spreadsheet review.</li>
-          <li>Generate a PDF report if needed.</li>
+          <li>Load the crash spreadsheet and the project boundary KMZ.</li>
+          <li>Confirm the latitude and longitude columns.</li>
+          <li>Run refinement.</li>
+          <li>Review any likely unplaced crashes in the guided review stage.</li>
+          <li>Download the refined outputs and generate the PDF report if needed.</li>
         </ol>
         <h3>Outputs produced</h3>
         <ul>
           <li>Refined crash data file inside the KMZ boundary.</li>
           <li>Crashes Without Valid Lat-Long Data extract.</li>
           <li>Coordinate Recovery Review extract for rows that still need location work.</li>
-          <li>Rejected Coordinate Review extract for crashes you explicitly keep out.</li>
+          <li>Excluded Coordinate Review extract for crashes you explicitly keep out.</li>
           <li>KMZ crash report for Google Earth previews.</li>
           <li>Map preview in the browser and optional full PDF report.</li>
         </ul>
@@ -274,8 +383,8 @@
       <div class="modal-body">
         <p>Each run writes outputs into a dedicated folder under outputs/web_runs.</p>
         <p>Rows auto-filled by the coordinate recovery pass are tagged in the refined output.</p>
-        <p>The browser review wizard lets you confirm, manually place, or reject likely crashes without downloading the workbook.</p>
-        <p>Rejected crashes are written to a separate Rejected Coordinate Review output instead of staying in the refined data.</p>
+        <p>The browser review workbench lets you confirm, manually place, or exclude likely crashes without downloading the workbook.</p>
+        <p>Excluded crashes are written to a separate Rejected Coordinate Review output instead of staying in the refined data.</p>
         <p>Approved coordinate review workbooks rerun the pipeline against the original crash data and KMZ from the selected source run.</p>
         <p>The map report uses Leaflet tiles and needs network access to load the basemap.</p>
         <p>PDF reports are generated from refined data unless a separate PDF data file is supplied.</p>

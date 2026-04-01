@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import zipfile
 
-from crash_data_refiner.geo import load_kmz_polygon
+from crash_data_refiner.geo import is_usable_coordinate_pair, load_kmz_polygon
 from crash_data_refiner.refiner import CrashDataRefiner
 
 
@@ -57,3 +57,8 @@ def test_kmz_polygon_filtering(tmp_path: Path) -> None:
     assert len(included) == 1
     assert len(excluded) == 1
     assert len(invalid) == 1
+
+
+def test_origin_coordinate_pair_is_not_usable() -> None:
+    assert is_usable_coordinate_pair(41.5, -87.5) is True
+    assert is_usable_coordinate_pair(0.0, 0.0) is False
