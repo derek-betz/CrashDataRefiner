@@ -32,6 +32,7 @@ const state = {
   mapReportName: null,
   previewTimer: null,
   previewRequestId: 0,
+  headerRequestId: 0,
 };
 
 const el = {
@@ -57,6 +58,7 @@ const el = {
   labelOrderHint: document.getElementById("label-order-hint"),
   columnOptions: document.getElementById("column-options"),
   columnHint: document.getElementById("column-hint"),
+  columnLoadingIndicator: document.getElementById("column-loading-indicator"),
   generateReport: document.getElementById("generate-report"),
   applyReview: document.getElementById("apply-review"),
   reportProgress: document.getElementById("report-progress"),
@@ -88,17 +90,21 @@ const el = {
   stageStepReview: document.getElementById("stage-step-review"),
   stageStepResults: document.getElementById("stage-step-results"),
   advancedToolsPanel: document.getElementById("advanced-tools-panel"),
+  inputShell: document.querySelector(".input-shell"),
   checkDataStatus: document.getElementById("check-data-status"),
   checkKmzStatus: document.getElementById("check-kmz-status"),
   checkColumnsStatus: document.getElementById("check-columns-status"),
   mapFrame: document.getElementById("map-frame"),
   mapPlaceholder: document.getElementById("map-placeholder"),
+  inputMapFrame: document.getElementById("input-map-frame"),
+  inputMapPlaceholder: document.getElementById("input-map-placeholder"),
   mapSubtitle: document.getElementById("map-subtitle"),
   mapMode: document.getElementById("map-mode"),
   wizardMap: document.getElementById("wizard-map"),
   wizardMapToolbar: document.getElementById("wizard-map-toolbar"),
   wizardMapSelection: document.getElementById("wizard-map-selection"),
   clearMapSelection: document.getElementById("clear-map-selection"),
+  inputOpenMap: document.getElementById("input-open-map"),
   openMap: document.getElementById("open-map"),
   reviewList: document.getElementById("review-list"),
   reviewSummary: document.getElementById("review-summary"),
@@ -110,7 +116,9 @@ const el = {
   reviewStageCount: document.getElementById("review-stage-count"),
   reviewStageTotals: document.getElementById("review-stage-totals"),
   reviewStageNote: document.getElementById("review-stage-note"),
+  reviewStageProgressFill: document.getElementById("review-stage-progressfill"),
   applyBrowserReview: document.getElementById("apply-browser-review"),
+  reviewSkipToResults: document.getElementById("review-skip-to-results"),
   resultsSummaryLine: document.getElementById("results-summary-line"),
   resultsGenerateReport: document.getElementById("results-generate-report"),
   resultsOpenMap: document.getElementById("results-open-map"),
@@ -134,8 +142,12 @@ function showToast(message) {
 
 function setStatus(stateName, title, detail) {
   el.statusBar.dataset.state = stateName;
-  el.statusTitle.textContent = title;
-  el.statusDetail.textContent = detail;
+  if (el.statusTitle) {
+    el.statusTitle.textContent = title;
+  }
+  if (el.statusDetail) {
+    el.statusDetail.textContent = detail;
+  }
   saveUiSession();
 }
 
@@ -189,7 +201,16 @@ function updateRelabelButton() {
 
 function updateBrowserReviewButton() {
   const selectedCount = Object.keys(state.reviewDecisions).length;
+  const recommendResults = reviewResultsRecommended();
   el.applyBrowserReview.disabled = !(state.runId && selectedCount > 0);
+  el.applyBrowserReview.classList.toggle(
+    "is-ready",
+    !!state.runId && reviewPendingCount() > 0 && selectedCount === reviewPendingCount()
+  );
+  if (el.reviewSkipToResults) {
+    el.reviewSkipToResults.hidden = !(state.runId && (recommendResults || (selectedCount === 0 && reviewPendingCount() > 0)));
+    el.reviewSkipToResults.textContent = recommendResults ? "Continue to results" : "Skip to results";
+  }
   updateReviewStageHeader();
   saveUiSession();
 }
@@ -296,12 +317,90 @@ function setTechnicalDetailsOpen(isOpen) {
   saveUiSession();
 }
 
+function resetTransientInputUi() {
+  el.dataInput.value = "";
+  el.kmzInput.value = "";
+  el.pdfInput.value = "";
+  el.reviewInput.value = "";
+  el.latColumn.value = "";
+  el.lonColumn.value = "";
+  el.dataLabel.textContent = "Crash spreadsheet (.csv, .xlsx)";
+  el.dataHint.textContent = "Drop file or click to browse";
+  el.kmzLabel.textContent = "Boundary KMZ (.kmz)";
+  el.kmzHint.textContent = "One polygon only";
+  el.pdfLabel.textContent = "Alternate PDF source (.csv, .xlsx)";
+  el.pdfHint.textContent = "Optional";
+  el.reviewLabel.textContent = "Reviewed coordinate workbook";
+  el.reviewHint.textContent = "Upload a reviewed workbook";
+  if (el.columnHint) {
+    el.columnHint.hidden = false;
+    el.columnHint.textContent = "Columns will populate automatically after upload.";
+  }
+  updateColumnOptions([]);
+  setLabelOrderSelection("auto", { scope: "input" });
+}
+
+function previewSurfaces() {
+  return [
+    {
+      frame: el.inputMapFrame,
+      placeholder: el.inputMapPlaceholder,
+      button: el.inputOpenMap,
+      emptyMessage: "Load a spreadsheet and KMZ to preview the project map.",
+    },
+    {
+      frame: el.mapFrame,
+      placeholder: el.mapPlaceholder,
+      button: el.openMap,
+      emptyMessage: "The map appears here once files are loaded.",
+    },
+  ].filter((surface) => surface.frame && surface.placeholder);
+}
+
+function resetPreviewSurface(surface, message = surface.emptyMessage) {
+  surface.frame.dataset.loaded = "false";
+  surface.frame.removeAttribute("src");
+  surface.placeholder.textContent = message;
+  surface.placeholder.style.display = "flex";
+  if (surface.button) {
+    surface.button.disabled = true;
+    delete surface.button.dataset.url;
+  }
+}
+
+function loadPreviewSurface(surface, url) {
+  surface.frame.dataset.loaded = "false";
+  surface.placeholder.textContent = "Loading map...";
+  surface.placeholder.style.display = "flex";
+  surface.frame.src = url;
+  if (surface.button) {
+    surface.button.disabled = false;
+    surface.button.dataset.url = url;
+  }
+}
+
+function bindPreviewSurface(frame, placeholder) {
+  if (!frame || !placeholder) return;
+  frame.addEventListener("load", () => {
+    if (frame.getAttribute("src")) {
+      frame.dataset.loaded = "true";
+      placeholder.style.display = "none";
+    }
+  });
+  frame.addEventListener("error", () => {
+    frame.dataset.loaded = "false";
+    placeholder.textContent = "Map preview unavailable.";
+    placeholder.style.display = "flex";
+  });
+}
+
 function getDisplayRunInputs() {
+  const useSavedInputs = state.uiStage !== "inputs" && !!state.runId;
   return {
-    dataFile: state.dataFile ? state.dataFile.name : (state.runInputs && state.runInputs.dataFile) || "",
-    kmzFile: state.kmzFile ? state.kmzFile.name : (state.runInputs && state.runInputs.kmzFile) || "",
-    latColumn: el.latColumn.value.trim() || (state.runInputs && state.runInputs.latColumn) || "",
-    lonColumn: el.lonColumn.value.trim() || (state.runInputs && state.runInputs.lonColumn) || "",
+    dataFile: state.dataFile ? state.dataFile.name : (useSavedInputs ? (state.runInputs && state.runInputs.dataFile) || "" : ""),
+    kmzFile: state.kmzFile ? state.kmzFile.name : (useSavedInputs ? (state.runInputs && state.runInputs.kmzFile) || "" : ""),
+    latColumn: el.latColumn.value.trim() || (useSavedInputs ? (state.runInputs && state.runInputs.latColumn) || "" : ""),
+    lonColumn: el.lonColumn.value.trim() || (useSavedInputs ? (state.runInputs && state.runInputs.lonColumn) || "" : ""),
   };
 }
 
@@ -375,20 +474,24 @@ function updateLabelOrderControls() {
     el.resultsLabelOrderStatus.textContent = state.runId
       ? (
         requested === "auto"
-          ? `This run used automatic numbering and resolved to ${formatLabelOrder(resolved)}. Regenerating labels rewrites the refined spreadsheet and KMZ together.`
-          : `This run is currently numbered ${formatLabelOrder(resolved)}. Regenerating labels rewrites the refined spreadsheet and KMZ together.`
+          ? `Current output order: ${formatLabelOrder(resolved)}.`
+          : `Current output order: ${formatLabelOrder(resolved)}.`
       )
-      : "Automatic mode chooses the label direction for this run.";
+      : "Choose how crash labels should be ordered.";
   }
   if (el.labelOrderHint) {
     el.labelOrderHint.textContent = inputSelection === "auto"
-      ? "Automatic mode chooses the dominant spread direction and breaks ties west to east."
-      : `Manual override selected: ${formatLabelOrder(inputSelection)}.`;
+      ? "Automatic selection is active."
+      : `Override: ${formatLabelOrder(inputSelection)}.`;
   }
 }
 
 function reviewPendingCount() {
   return (state.reviewQueue || []).length + (state.reviewSecondaryQueue || []).length;
+}
+
+function reviewResultsRecommended() {
+  return !!state.runId && !(state.reviewQueue || []).length && !state.showSecondaryReview;
 }
 
 function canEnterStage(stage) {
@@ -403,30 +506,26 @@ function canEnterStage(stage) {
 
 function renderStageChrome() {
   renderStageFiles();
-  if (!el.stageKicker || !el.stageTitle || !el.stageDescription || !el.stageNext) return;
-
   if (state.uiStage === "inputs") {
-    el.stageKicker.textContent = "Step 1 of 3";
-    el.stageTitle.textContent = "Load the project files";
-    el.stageDescription.textContent = "Add the crash spreadsheet, boundary KMZ, and coordinate columns before running refinement.";
-    el.stageNext.textContent = "Next: load the crash spreadsheet, boundary KMZ, and coordinate columns.";
+    if (el.stageKicker) el.stageKicker.textContent = "Step 1 of 3";
+    if (el.stageTitle) el.stageTitle.textContent = "Load project files";
+    if (el.stageDescription) el.stageDescription.textContent = "";
+    if (el.stageNext) el.stageNext.textContent = "";
     return;
   }
 
   if (state.uiStage === "review") {
-    el.stageKicker.textContent = "Step 2 of 3";
-    el.stageTitle.textContent = "Review likely project crashes";
-    el.stageDescription.textContent = "Use the map and the current crash details to confirm a location or exclude the crash from the project.";
-    el.stageNext.textContent = "Next: apply the reviewed decisions to generate updated outputs.";
+    if (el.stageKicker) el.stageKicker.textContent = "Step 2 of 3";
+    if (el.stageTitle) el.stageTitle.textContent = "Review crashes";
+    if (el.stageDescription) el.stageDescription.textContent = "";
+    if (el.stageNext) el.stageNext.textContent = "";
     return;
   }
 
-  el.stageKicker.textContent = "Step 3 of 3";
-  el.stageTitle.textContent = "Download the project outputs";
-  el.stageDescription.textContent = "Start with the refined crash file and KMZ, then open technical details only if you need deeper pipeline information.";
-  el.stageNext.textContent = reviewPendingCount()
-    ? "Next: download the current outputs or return to review for the remaining likely crashes."
-    : "Next: download the outputs or generate the PDF crash report.";
+  if (el.stageKicker) el.stageKicker.textContent = "Step 3 of 3";
+  if (el.stageTitle) el.stageTitle.textContent = "Download outputs";
+  if (el.stageDescription) el.stageDescription.textContent = "";
+  if (el.stageNext) el.stageNext.textContent = "";
 }
 
 function updateReadinessChecklist() {
@@ -507,42 +606,86 @@ function getSummaryOutputCounts() {
 function updateResultsSummary() {
   if (!el.resultsSummaryLine) return;
   if (!state.runId || !state.lastRunSummary) {
-    el.resultsSummaryLine.textContent = "Run refinement to create project outputs.";
+    el.resultsSummaryLine.innerHTML = '<span class="summary-pill">Run refinement to create outputs.</span>';
     return;
   }
   const counts = getSummaryOutputCounts();
-  const outsideProject = metricValue("Excluded");
-  el.resultsSummaryLine.textContent = `${counts.refinedRows} crash row(s) are in the refined output. ${outsideProject} row(s) were automatically determined to be outside the project limits. ${counts.rejectedReviewRows} row(s) were excluded from the project by manual review.`;
+  const outsideProject = Number(metricValue("Excluded"));
+  const reviewCount = counts.coordinateReviewRows;
+  el.resultsSummaryLine.innerHTML = `
+    <span class="summary-pill">${counts.refinedRows} refined</span>
+    <span class="summary-pill">${outsideProject} outside</span>
+    <span class="summary-pill">${counts.rejectedReviewRows} excluded</span>
+    <span class="summary-pill">${reviewCount} review</span>
+  `;
 }
 
 function updateReviewStageHeader() {
-  if (!el.reviewStageCount || !el.reviewStageTotals || !el.reviewStageNote) return;
+  if (!el.reviewStageCount || !el.reviewStageTotals) return;
   const visibleSteps = getVisibleReviewSteps();
   const current = getCurrentReviewStep();
-  const stats = countReviewDecisions();
-  const remaining = visibleSteps.filter((step) => !state.reviewDecisions[step.rowKey]).length;
+  const secondaryCount = (state.reviewSecondaryQueue || []).length;
+  const decided = visibleSteps.filter((step) => !!state.reviewDecisions[step.rowKey]).length;
+  const total = visibleSteps.length;
+  const progress = total ? Math.round((decided / total) * 100) : 0;
 
-  if (!visibleSteps.length) {
-    el.reviewStageCount.textContent = "Crash review";
-    el.reviewStageTotals.textContent = "No likely review items are loaded.";
-    el.reviewStageNote.textContent = "Review likely crashes one at a time, confirm the location, or exclude the crash from the project.";
+  if (!total) {
+    if (reviewResultsRecommended()) {
+      el.reviewStageCount.textContent = "No likely crash review needed";
+      el.reviewStageTotals.textContent = secondaryCount
+        ? `${secondaryCount} lower-priority candidate(s) available`
+        : "Recommended: continue to results";
+    } else {
+      el.reviewStageCount.textContent = "Crash review";
+      el.reviewStageTotals.textContent = "0 of 0 decided";
+    }
+    if (el.reviewStageProgressFill) {
+      el.reviewStageProgressFill.style.width = "0%";
+    }
     return;
   }
 
   el.reviewStageCount.textContent = current
-    ? `Crash ${state.currentReviewIndex + 1} of ${visibleSteps.length}`
-    : `Crash review (${visibleSteps.length} items)`;
-  el.reviewStageTotals.textContent = `${stats.suggested + stats.manual} included, ${stats.excluded} excluded, ${remaining} remaining.`;
-  el.reviewStageNote.textContent = "Confirm the suggested point, place the crash on the map, or exclude it from the project.";
+    ? `Crash ${state.currentReviewIndex + 1} of ${total}`
+    : `Crash review (${total})`;
+  el.reviewStageTotals.textContent = `${decided} of ${total} decided`;
+  if (el.reviewStageProgressFill) {
+    el.reviewStageProgressFill.style.width = `${progress}%`;
+  }
 }
 
 function updateSummary() {
-  el.summaryData.textContent = state.dataFile ? state.dataFile.name : "No file selected.";
-  el.summaryKmz.textContent = state.kmzFile ? state.kmzFile.name : "No boundary selected.";
-  const lat = el.latColumn.value.trim();
-  const lon = el.lonColumn.value.trim();
-  el.summaryColumns.textContent = lat && lon ? `${lat} / ${lon}` : "Latitude / Longitude not set.";
+  if (el.summaryData) {
+    el.summaryData.textContent = state.dataFile ? state.dataFile.name : "No file selected.";
+  }
+  if (el.summaryKmz) {
+    el.summaryKmz.textContent = state.kmzFile ? state.kmzFile.name : "No boundary selected.";
+  }
+  if (el.summaryColumns) {
+    const lat = el.latColumn.value.trim();
+    const lon = el.lonColumn.value.trim();
+    el.summaryColumns.textContent = lat && lon ? `${lat} / ${lon}` : "Latitude / Longitude not set.";
+  }
   renderStageChrome();
+}
+
+function setColumnDetectionBusy(isBusy) {
+  if (el.inputShell) {
+    el.inputShell.classList.toggle("busy", isBusy);
+    el.inputShell.setAttribute("aria-busy", isBusy ? "true" : "false");
+  }
+  if (el.columnHint) {
+    el.columnHint.hidden = isBusy;
+  }
+  if (el.columnLoadingIndicator) {
+    el.columnLoadingIndicator.hidden = !isBusy;
+  }
+  if (el.latColumn) {
+    el.latColumn.disabled = isBusy;
+  }
+  if (el.lonColumn) {
+    el.lonColumn.disabled = isBusy;
+  }
 }
 
 function updateColumnOptions(headers) {
@@ -555,32 +698,50 @@ function updateColumnOptions(headers) {
 }
 
 async function fetchHeaders(file) {
+  const requestId = ++state.headerRequestId;
   const form = new FormData();
   form.append("data_file", file);
-  el.columnHint.textContent = "Detecting columns...";
-  const response = await fetch("/api/preview", { method: "POST", body: form });
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    el.columnHint.textContent = data.error || "Unable to detect columns.";
-    return;
+  setColumnDetectionBusy(true);
+  try {
+    const response = await fetch("/api/preview", { method: "POST", body: form });
+    if (requestId !== state.headerRequestId || state.dataFile !== file) {
+      return;
+    }
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      if (el.columnHint) {
+        el.columnHint.textContent = data.error || "Unable to detect columns.";
+      }
+      return;
+    }
+
+    const data = await response.json();
+    const headers = data.headers || [];
+    if (headers.length) {
+      updateColumnOptions(headers);
+      if (el.columnHint) {
+        el.columnHint.textContent = `Detected ${headers.length} columns.`;
+      }
+    } else {
+      if (el.columnHint) {
+        el.columnHint.textContent = "No columns detected. Enter them manually.";
+      }
+    }
+
+    if (data.latGuess && !el.latColumn.value.trim()) {
+      el.latColumn.value = data.latGuess;
+    }
+    if (data.lonGuess && !el.lonColumn.value.trim()) {
+      el.lonColumn.value = data.lonGuess;
+    }
+    updateSummary();
+    updateRunButton();
+    schedulePreviewMap();
+  } finally {
+    if (requestId === state.headerRequestId) {
+      setColumnDetectionBusy(false);
+    }
   }
-  const data = await response.json();
-  const headers = data.headers || [];
-  if (headers.length) {
-    updateColumnOptions(headers);
-    el.columnHint.textContent = `${headers.length} columns detected.`;
-  } else {
-    el.columnHint.textContent = "No headers detected. Type columns manually.";
-  }
-  if (data.latGuess && !el.latColumn.value.trim()) {
-    el.latColumn.value = data.latGuess;
-  }
-  if (data.lonGuess && !el.lonColumn.value.trim()) {
-    el.lonColumn.value = data.lonGuess;
-  }
-  updateSummary();
-  updateRunButton();
-  schedulePreviewMap();
 }
 
 function appendLog(entries) {
@@ -607,6 +768,7 @@ function clearLogs() {
 }
 
 function renderMetrics(summary) {
+  if (!el.metrics) return;
   el.metrics.innerHTML = "";
   if (!summary || !summary.metrics) return;
   summary.metrics.forEach((metric) => {
@@ -630,24 +792,24 @@ function renderOutputs(outputs) {
   el.outputLinks.innerHTML = "";
   const describeOutput = (name) => {
     if (/_refined\./i.test(name)) {
-      return { title: "Refined crash data", detail: "Use this as the main project-ready crash spreadsheet.", order: 0 };
+      return { title: "Refined crash data", order: 0 };
     }
     if (/Rejected Coordinate Review/i.test(name)) {
-      return { title: "Excluded crash review output", detail: "Crashes you explicitly kept out of the project after review.", order: 2 };
+      return { title: "Excluded crash review output", order: 2 };
     }
     if (/Coordinate Recovery Review/i.test(name)) {
-      return { title: "Coordinate recovery workbook", detail: "Rows that still need coordinate work or spreadsheet-based review.", order: 3 };
+      return { title: "Coordinate recovery workbook", order: 3 };
     }
     if (/\.kmz$/i.test(name)) {
-      return { title: "Crash KMZ", detail: "Google Earth / map preview output for the refined crashes.", order: 1 };
+      return { title: "Crash KMZ", order: 1 };
     }
     if (/Without Valid Lat-Long/i.test(name)) {
-      return { title: "Rows missing coordinates", detail: "Raw rows that still did not have usable latitude and longitude values.", order: 4 };
+      return { title: "Rows missing coordinates", order: 4 };
     }
     if (/\.pdf$/i.test(name)) {
-      return { title: "PDF crash report", detail: "Formatted PDF report generated from the run outputs.", order: 5 };
+      return { title: "PDF crash report", order: 5 };
     }
-    return { title: name, detail: "Additional output from the refinement pipeline.", order: 10 };
+    return { title: name, order: 10 };
   };
 
   outputs
@@ -658,7 +820,6 @@ function renderOutputs(outputs) {
       wrapper.className = "output-item";
       wrapper.innerHTML = `
         <div class="output-item-title">${escapeHtml(meta.title)}</div>
-        <div class="output-item-detail">${escapeHtml(meta.detail)}</div>
         <a href="/api/run/${state.runId}/download/${encodeURIComponent(item.name)}" target="_blank">${escapeHtml(item.name)}</a>
       `;
       el.outputLinks.appendChild(wrapper);
@@ -670,19 +831,14 @@ function setMapPreview(mapName, mapUrl) {
   state.mapReportName = mapName;
   const url = mapUrl || (mapName ? `/api/run/${state.runId}/view/${encodeURIComponent(mapName)}` : null);
   if (!url) {
-    el.mapFrame.removeAttribute("src");
-    el.mapPlaceholder.style.display = "flex";
-    el.openMap.disabled = true;
+    previewSurfaces().forEach((surface) => resetPreviewSurface(surface));
     if (el.resultsOpenMap) {
       el.resultsOpenMap.disabled = true;
       delete el.resultsOpenMap.dataset.url;
     }
     return;
   }
-  el.mapFrame.src = url;
-  el.mapPlaceholder.style.display = "none";
-  el.openMap.disabled = false;
-  el.openMap.dataset.url = url;
+  previewSurfaces().forEach((surface) => loadPreviewSurface(surface, url));
   if (el.resultsOpenMap) {
     el.resultsOpenMap.disabled = false;
     el.resultsOpenMap.dataset.url = url;
@@ -690,7 +846,7 @@ function setMapPreview(mapName, mapUrl) {
 }
 
 function schedulePreviewMap() {
-  if (!state.dataFile || !state.kmzFile || state.pollTimer) return;
+  if (!state.kmzFile || state.pollTimer) return;
   if (state.previewTimer) {
     window.clearTimeout(state.previewTimer);
   }
@@ -698,25 +854,41 @@ function schedulePreviewMap() {
 }
 
 async function requestPreviewMap() {
-  if (!state.dataFile || !state.kmzFile || state.pollTimer) return;
+  if (!state.kmzFile || state.pollTimer) return;
   const requestId = ++state.previewRequestId;
-  el.mapPlaceholder.textContent = "Loading map preview...";
-  el.mapPlaceholder.style.display = "flex";
-  el.openMap.disabled = true;
+  previewSurfaces().forEach((surface) => {
+    surface.frame.dataset.loaded = "false";
+    surface.placeholder.textContent = "Loading map...";
+    surface.placeholder.style.display = "flex";
+    if (surface.button) {
+      surface.button.disabled = true;
+    }
+  });
 
   const form = new FormData();
-  form.append("data_file", state.dataFile);
   form.append("boundary_file", state.kmzFile);
-  form.append("lat_column", el.latColumn.value.trim());
-  form.append("lon_column", el.lonColumn.value.trim());
+  const latColumn = el.latColumn.value.trim();
+  const lonColumn = el.lonColumn.value.trim();
+  const includeCrashData = !!(state.dataFile && latColumn && lonColumn);
+  if (includeCrashData) {
+    form.append("data_file", state.dataFile);
+    form.append("lat_column", latColumn);
+    form.append("lon_column", lonColumn);
+  }
 
   const response = await fetch("/api/preview-map", { method: "POST", body: form });
   if (requestId !== state.previewRequestId) return;
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
-    el.mapPlaceholder.textContent = data.error || "Map preview unavailable.";
-    el.mapPlaceholder.style.display = "flex";
-    setMapPreview(null);
+    previewSurfaces().forEach((surface) => {
+      surface.frame.dataset.loaded = "false";
+      surface.placeholder.textContent = data.error || "Map preview unavailable.";
+      surface.placeholder.style.display = "flex";
+      if (surface.button) {
+        surface.button.disabled = true;
+        delete surface.button.dataset.url;
+      }
+    });
     return;
   }
   const data = await response.json().catch(() => ({}));
@@ -978,12 +1150,12 @@ function ensureReviewMap() {
 
 function showProjectPreviewMap() {
   el.mapMode.textContent = "Project Map";
-  el.mapSubtitle.textContent = "Project map preview and crash placement canvas.";
+  el.mapSubtitle.textContent = "Preview the project boundary and current outputs.";
   el.wizardMap.hidden = true;
   el.mapFrame.style.display = "block";
   el.wizardMapToolbar.hidden = true;
   el.clearMapSelection.disabled = true;
-  if (el.mapFrame.getAttribute("src")) {
+  if (el.mapFrame.getAttribute("src") && el.mapFrame.dataset.loaded === "true") {
     el.mapPlaceholder.style.display = "none";
   } else {
     el.mapPlaceholder.style.display = "flex";
@@ -992,25 +1164,28 @@ function showProjectPreviewMap() {
 
 function renderReviewMap() {
   const current = getCurrentReviewStep();
-  if (!current || !state.reviewMapData || !window.L) {
+  const polygon = state.reviewMapData && Array.isArray(state.reviewMapData.polygon)
+    ? state.reviewMapData.polygon
+    : [];
+  if (!current || !state.reviewMapData || !window.L || !polygon.length) {
     showProjectPreviewMap();
     return;
   }
 
   const drawMap = () => {
     const hasUsableSuggestedPoint = current.hasSuggestion && current.suggestedInsideBoundary !== false;
-    el.mapMode.textContent = "Review Wizard";
-    el.mapSubtitle.textContent = `Inspect crash ${state.currentReviewIndex + 1} of ${getVisibleReviewSteps().length} and place it on the map if needed.`;
-    el.mapFrame.style.display = "none";
-    el.wizardMap.hidden = false;
-    el.mapPlaceholder.style.display = "none";
-    el.wizardMapToolbar.hidden = false;
-
     ensureReviewMap();
     if (!state.reviewMap || !state.reviewMapLayers) {
       showProjectPreviewMap();
       return;
     }
+
+    el.mapMode.textContent = "Review Wizard";
+    el.mapSubtitle.textContent = `Crash ${state.currentReviewIndex + 1} of ${getVisibleReviewSteps().length}`;
+    el.mapFrame.style.display = "none";
+    el.wizardMap.hidden = false;
+    el.mapPlaceholder.style.display = "none";
+    el.wizardMapToolbar.hidden = false;
 
     window.setTimeout(() => {
       try {
@@ -1022,7 +1197,6 @@ function renderReviewMap() {
       }
     }, 0);
 
-    const polygon = state.reviewMapData.polygon || [];
     const contextPoints = state.reviewMapData.points || [];
     const { context, suggested, selected } = state.reviewMapLayers;
     const draftPlacement = getDraftPlacement(current);
@@ -1109,21 +1283,21 @@ function renderReviewMap() {
       ? pointInProjectBoundary(draftPlacement.latitude, draftPlacement.longitude)
       : false;
     if (state.reviewMapPickMode) {
-      el.wizardMapSelection.textContent = `Pick mode is active for crash ${current.crashId}. Click inside the KMZ boundary to stage a custom placement.`;
+      el.wizardMapSelection.textContent = "Pick mode active";
     } else if (draftPlacement) {
       el.wizardMapSelection.textContent = insideDraft
-        ? `Staged custom placement: ${formatCoordinate(draftPlacement.latitude)}, ${formatCoordinate(draftPlacement.longitude)}. Confirm it in the workbench when ready.`
-        : `Staged custom placement is outside the KMZ boundary. Pick a point inside the boundary or exclude this crash from the project.`;
+        ? `Pin staged: ${formatCoordinate(draftPlacement.latitude)}, ${formatCoordinate(draftPlacement.longitude)}`
+        : "Pin staged outside boundary";
     } else if (decision && decision.action === "reject") {
-      el.wizardMapSelection.textContent = "This crash is excluded from the refined data until you undo the exclusion.";
+      el.wizardMapSelection.textContent = "Excluded";
     } else if (decision && decision.action === "apply" && decision.placementMode === "manual") {
-      el.wizardMapSelection.textContent = `Manual placement confirmed at ${formatCoordinate(decision.latitude)}, ${formatCoordinate(decision.longitude)}.`;
+      el.wizardMapSelection.textContent = `Placed: ${formatCoordinate(decision.latitude)}, ${formatCoordinate(decision.longitude)}`;
     } else if (decision && decision.action === "apply") {
-      el.wizardMapSelection.textContent = `Suggested placement confirmed at ${formatCoordinate(decision.latitude)}, ${formatCoordinate(decision.longitude)}.`;
+      el.wizardMapSelection.textContent = `Using suggested point`;
     } else if (hasUsableSuggestedPoint) {
-      el.wizardMapSelection.textContent = "Amber marker shows the suggested placement. Use it, pick a custom point, or exclude the crash from the project.";
+      el.wizardMapSelection.textContent = "Suggested point available";
     } else {
-      el.wizardMapSelection.textContent = "No suggested placement was available. Use Pick On Map to stage a location or exclude the crash from the project.";
+      el.wizardMapSelection.textContent = "No suggested point";
     }
     el.clearMapSelection.textContent = "Discard Map Pin";
     el.clearMapSelection.disabled = !draftPlacement;
@@ -1176,7 +1350,7 @@ function getCurrentChoiceState(step) {
     return {
       kind: "none",
       statusClass: "",
-      statusText: "No review item is currently selected.",
+      statusText: "Pending",
       helperText: "",
       actionLabel: "",
       showAction: false,
@@ -1193,9 +1367,9 @@ function getCurrentChoiceState(step) {
     return {
       kind: "excluded",
       statusClass: "status-excluded",
-      statusText: "Excluded from refined data. This crash will stay out of the project outputs until you undo the exclusion.",
-      helperText: "Undo Exclusion puts this crash back into the review workbench.",
-      actionLabel: "Undo Exclusion",
+      statusText: "Excluded",
+      helperText: "",
+      actionLabel: "Undo",
       showAction: true,
     };
   }
@@ -1207,9 +1381,9 @@ function getCurrentChoiceState(step) {
     return {
       kind: "included",
       statusClass: "status-included",
-      statusText: `Included in refined data at ${formatCoordinate(decision.latitude)}, ${formatCoordinate(decision.longitude)} using ${placementLabel}.`,
-      helperText: "Undo Placement removes this confirmed location so you can decide again.",
-      actionLabel: "Undo Placement",
+      statusText: `Included at ${formatCoordinate(decision.latitude)}, ${formatCoordinate(decision.longitude)}`,
+      helperText: placementLabel,
+      actionLabel: "Undo",
       showAction: true,
     };
   }
@@ -1220,10 +1394,10 @@ function getCurrentChoiceState(step) {
       kind: "staged",
       statusClass: "status-staged",
       statusText: draftInside
-        ? `Map pin staged at ${coordinateText}. Confirm Map Placement to include this crash, or discard the temporary pin.`
-        : `Map pin staged at ${coordinateText}, but it falls outside the KMZ boundary. Pick a point inside the boundary or discard the temporary pin.`,
-      helperText: "Discard Map Pin removes the temporary point you placed on the map.",
-      actionLabel: "Discard Map Pin",
+        ? `Pin staged at ${coordinateText}`
+        : `Pin outside boundary`,
+      helperText: "",
+      actionLabel: "Clear pin",
       showAction: true,
     };
   }
@@ -1231,8 +1405,8 @@ function getCurrentChoiceState(step) {
   return {
     kind: "undecided",
     statusClass: "",
-    statusText: "No final choice selected yet. Choose a placement or exclude this crash from the project.",
-    helperText: "Exclude From Project keeps this crash out of the refined dataset and writes it to the rejected-review output.",
+    statusText: "Pending",
+    helperText: "",
     actionLabel: "",
     showAction: false,
   };
@@ -1242,12 +1416,19 @@ function renderReviewQueue() {
   const primarySteps = state.reviewQueue || [];
   const secondarySteps = state.reviewSecondaryQueue || [];
   const visibleSteps = getVisibleReviewSteps();
-  const stats = countReviewDecisions();
   const totalLoaded = primarySteps.length + secondarySteps.length;
+  const recommendResults = reviewResultsRecommended();
 
-  el.reviewQueueSubtitle.textContent = totalLoaded
-    ? "Step through likely crashes from strongest match to weakest, confirm or place each one on the map, and exclude anything that does not belong in the project."
-    : "Run refinement to populate the crash placement workbench.";
+  if (el.reviewQueueSubtitle) {
+    const decidedCount = visibleSteps.filter((step) => !!state.reviewDecisions[step.rowKey]).length;
+    if (recommendResults) {
+      el.reviewQueueSubtitle.textContent = "Recommended: continue to results.";
+    } else {
+      el.reviewQueueSubtitle.textContent = totalLoaded
+        ? `${decidedCount} of ${visibleSteps.length || totalLoaded} decided`
+        : "Work left: none";
+    }
+  }
 
   if (!totalLoaded) {
     state.showSecondaryReview = false;
@@ -1255,11 +1436,22 @@ function renderReviewQueue() {
     state.reviewMapPickMode = false;
     state.reviewExcludeConfirmRow = null;
     setReviewWorkbenchTab("map");
-    el.reviewSummary.textContent = "No likely crash-review items loaded yet.";
+    el.reviewSummary.textContent = state.runId
+      ? "No crashes without lat/long data were flagged as likely inside the project boundary. Continue to results to generate refined outputs."
+      : "No review items loaded.";
     el.reviewList.className = "review-list empty";
-    el.reviewList.textContent = state.runId
-      ? "This run does not currently need browser review."
-      : "Run refinement to populate the crash placement workbench.";
+    el.reviewList.innerHTML = state.runId
+      ? `
+        <section class="wizard-empty review-empty-callout">
+          <div class="review-empty-kicker">Recommended next step</div>
+          <div class="review-section-title">No likely crash review needed</div>
+          <div class="review-section-subtitle">No crashes without lat/long data were likely inside the project boundary. Continue to results to generate the refined outputs.</div>
+          <div class="review-empty-actions">
+            <button class="btn primary" data-action="continue-results">Continue to results</button>
+          </div>
+        </section>
+      `
+      : "Run refinement to start review.";
     renderReviewMap();
     updateReviewStageHeader();
     updateStageAvailability();
@@ -1268,20 +1460,28 @@ function renderReviewQueue() {
   }
 
   const hiddenSecondaryText = secondarySteps.length && !state.showSecondaryReview
-    ? `${secondarySteps.length} lower-likelihood crash(es) remain excluded from the workbench for now.`
+    ? `${secondarySteps.length} lower-priority hidden`
     : "";
-  const pendingVisible = visibleSteps.filter((step) => !state.reviewDecisions[step.rowKey]).length;
-  el.reviewSummary.textContent = `${visibleSteps.length} crash(es) in the current review pass. ${stats.suggested} suggested confirmed, ${stats.manual} placed on the map, ${stats.excluded} excluded, ${pendingVisible} undecided. ${hiddenSecondaryText}`.trim();
+  const decidedVisible = visibleSteps.filter((step) => !!state.reviewDecisions[step.rowKey]).length;
+  if (recommendResults) {
+    el.reviewSummary.textContent = "No crashes without lat/long data were flagged as likely inside the project boundary. Continue to results to generate refined outputs, or open the lower-priority candidates if you want an extra pass.";
+  } else {
+    el.reviewSummary.textContent = `${decidedVisible} of ${visibleSteps.length} decided${hiddenSecondaryText ? ` • ${hiddenSecondaryText}` : ""}`;
+  }
 
   el.reviewList.className = "review-list wizard-mode";
   el.reviewList.innerHTML = "";
 
   if (!visibleSteps.length) {
     el.reviewList.innerHTML = `
-      <section class="wizard-empty">
-        <div class="review-section-title">No Likely Crashes In The Workbench</div>
-        <div class="review-section-subtitle">All likely crashes have been filtered out or there are only lower-likelihood candidates available.</div>
-        ${secondarySteps.length ? `<button class="btn secondary small" data-action="toggle-secondary">Load Lower-Likelihood Crashes</button>` : ""}
+      <section class="wizard-empty review-empty-callout">
+        <div class="review-empty-kicker">Recommended next step</div>
+        <div class="review-section-title">No likely crash review needed</div>
+        <div class="review-section-subtitle">No crashes without lat/long data were flagged as likely inside the project boundary. Continue to results to generate the refined outputs, or open the lower-priority candidates if you want an extra pass.</div>
+        <div class="review-empty-actions">
+          <button class="btn primary" data-action="continue-results">Continue to results</button>
+          ${secondarySteps.length ? `<button class="btn secondary small" data-action="toggle-secondary">Review lower-priority candidates</button>` : ""}
+        </div>
       </section>
     `;
     state.reviewExcludeConfirmRow = null;
@@ -1321,105 +1521,62 @@ function renderReviewQueue() {
   const choiceState = getCurrentChoiceState(current);
   const hasUsableSuggestedPoint = current.hasSuggestion && current.suggestedInsideBoundary !== false;
   const canAcceptSuggested = hasUsableSuggestedPoint;
-  const exclusionPending = state.reviewExcludeConfirmRow === current.rowKey;
   const navigationSecondaryLabel = secondarySteps.length
     ? (state.showSecondaryReview ? "Hide Lower-Likelihood Crashes" : "Load Lower-Likelihood Crashes")
     : "";
-
-  const placementSection = !decision
-    ? `
-      <section class="wizard-action-section">
-        <div class="wizard-action-title">Placement Actions</div>
-        <div class="wizard-actions">
-          <button class="btn secondary small" data-action="wizard-accept-suggested" data-row="${escapeHtml(current.rowKey)}"${canAcceptSuggested ? "" : " disabled"}>Use Suggested Location</button>
-          <button class="btn secondary small" data-action="wizard-pick-map" data-row="${escapeHtml(current.rowKey)}">${state.reviewMapPickMode ? "Map Pick Active" : "Place On Map"}</button>
-          <button class="btn secondary small" data-action="wizard-confirm-manual" data-row="${escapeHtml(current.rowKey)}"${draftPlacement && draftInside ? "" : " disabled"}>Confirm Map Placement</button>
-        </div>
-      </section>
-    `
-    : "";
-
-  const exclusionSection = !decision
-    ? `
-      <section class="wizard-action-section danger">
-        <div class="wizard-action-title">Project Exclusion</div>
-        <div class="wizard-actions">
-          <button class="btn danger small" data-action="wizard-exclude" data-row="${escapeHtml(current.rowKey)}">${escapeHtml(exclusionPending ? "Confirm Exclusion" : "Exclude From Project")}</button>
-        </div>
-        <div class="wizard-action-help">${
-          exclusionPending
-            ? "Confirm Exclusion keeps this crash out of the refined dataset and writes it to the rejected-review output."
-            : "Exclude From Project keeps this crash out of the refined dataset and writes it to the rejected-review output."
-        }</div>
-      </section>
-    `
-    : "";
-
   const currentChoiceAction = choiceState.showAction
-    ? `<div class="wizard-choice-actions"><button class="btn secondary small" data-action="wizard-clear-decision" data-row="${escapeHtml(current.rowKey)}">${escapeHtml(choiceState.actionLabel)}</button></div>`
+    ? `<button class="btn secondary small" data-action="wizard-clear-decision" data-row="${escapeHtml(current.rowKey)}">${escapeHtml(choiceState.actionLabel)}</button>`
+    : "";
+  const metadataChips = metadata.length
+    ? metadata.map((item) => `<span class="meta-chip">${escapeHtml(item)}</span>`).join("")
+    : '<span class="meta-chip">No crash metadata</span>';
+  const reviewNote = current.reviewReason || current.note || "No review signal recorded.";
+  const detailSummary = current.detail || "Location details unavailable.";
+  const suggestionBadge = hasUsableSuggestedPoint
+    ? `Suggested ${escapeHtml(`${formatCoordinate(current.suggestedLatitude)}, ${formatCoordinate(current.suggestedLongitude)}`)}`
+    : "No suggestion";
+  const extraDetails = reviewDetails.length || current.note || current.hasNarrative
+    ? `
+      <details class="review-more compact">
+        <summary>Details</summary>
+        ${reviewDetails.length ? `<ul class="review-relevance-list">${reviewDetails.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul>` : ""}
+        ${current.note ? `<div class="review-note">${escapeHtml(current.note)}</div>` : ""}
+        ${current.hasNarrative ? `<div class="wizard-narrative-text">${escapeHtmlWithBreaks(current.narrative)}</div>` : ""}
+      </details>
+    `
     : "";
 
   el.reviewList.innerHTML = `
     <section class="wizard-card ${decision ? "selected" : ""}">
-      <div class="wizard-progress">
+      <div class="wizard-progress compact">
         <div class="wizard-step-index">Crash ${state.currentReviewIndex + 1} of ${visibleSteps.length}</div>
-        <div class="wizard-step-meta">${escapeHtml(metadata.join(" | ") || "No additional crash metadata available.")}</div>
+        <div class="wizard-step-meta wizard-chip-row">${metadataChips}</div>
       </div>
       <div class="review-head">
         <div>
           <div class="review-title">${escapeHtml(current.title)}</div>
           <div class="review-detail">${escapeHtml(current.detail || "Location details unavailable.")}</div>
         </div>
-        <div class="review-badges">
+        <div class="review-badges compact-stack">
           <span class="review-badge ${reviewBucket}">${escapeHtml(bucketLabel)}</span>
-          <span class="review-badge">${escapeHtml(hasUsableSuggestedPoint ? "Suggested point available" : "Needs map placement")}</span>
+          <span class="review-badge status ${escapeHtml(choiceState.statusClass)}">${escapeHtml(choiceState.statusText)}</span>
         </div>
       </div>
-      <div class="review-relevance">
-        <div class="review-relevance-summary">${escapeHtml(current.reviewReason || "No project-relevance signal was recorded for this crash.")}</div>
-        ${
-          reviewDetails.length
-            ? `
-              <details class="review-more">
-                <summary>Show more</summary>
-                <ul class="review-relevance-list">
-                  ${reviewDetails.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}
-                </ul>
-                <div class="review-note">${escapeHtml(current.note || "No additional recovery note was recorded for this crash.")}</div>
-              </details>
-            `
-            : `<div class="review-note">${escapeHtml(current.note || "No additional recovery note was recorded for this crash.")}</div>`
-        }
+      <div class="wizard-chip-row">
+        <span class="meta-chip">${escapeHtml(suggestionBadge)}</span>
+        ${draftPlacement ? `<span class="meta-chip ${draftInside ? "ready" : "warn"}">Pin ${escapeHtml(`${formatCoordinate(draftPlacement.latitude)}, ${formatCoordinate(draftPlacement.longitude)}`)}</span>` : ""}
       </div>
-      ${
-        current.hasNarrative
-          ? `
-            <details class="wizard-narrative">
-              <summary>Show Narrative</summary>
-              <div class="wizard-narrative-text">${escapeHtmlWithBreaks(current.narrative)}</div>
-            </details>
-          `
-          : ""
-      }
-      <div class="wizard-suggestion">
-        <div class="wizard-suggestion-title">Suggested Placement</div>
-        <div class="wizard-suggestion-body">
-          ${
-            hasUsableSuggestedPoint
-              ? `Suggested point: ${escapeHtml(`${formatCoordinate(current.suggestedLatitude)}, ${formatCoordinate(current.suggestedLongitude)}`)}${current.suggestedInsideBoundary === false ? " (outside KMZ)" : ""}`
-              : "No suggested point was available for this crash."
-          }
-        </div>
+      <div class="review-relevance compact">
+        <div class="review-relevance-summary">${escapeHtml(reviewNote)}</div>
+        <div class="review-note">${escapeHtml(detailSummary)}</div>
+        ${extraDetails}
       </div>
-      <div class="wizard-action-sections">
-        ${placementSection}
-        ${exclusionSection}
-        <section class="wizard-action-section wizard-choice">
-          <div class="wizard-action-title">Current Choice</div>
-          <div class="wizard-decision-status ${escapeHtml(choiceState.statusClass)}">${escapeHtml(choiceState.statusText)}</div>
-          <div class="wizard-action-help">${escapeHtml(choiceState.helperText)}</div>
-          ${currentChoiceAction}
-        </section>
+      <div class="wizard-actions compact">
+        <button class="btn secondary small" data-action="wizard-accept-suggested" data-row="${escapeHtml(current.rowKey)}"${canAcceptSuggested ? "" : " disabled"}>Use suggested</button>
+        <button class="btn secondary small" data-action="wizard-pick-map" data-row="${escapeHtml(current.rowKey)}">${state.reviewMapPickMode ? "Picking on map" : "Place on map"}</button>
+        <button class="btn secondary small" data-action="wizard-confirm-manual" data-row="${escapeHtml(current.rowKey)}"${draftPlacement && draftInside ? "" : " disabled"}>Confirm pin</button>
+        <button class="btn danger small" data-action="wizard-exclude" data-row="${escapeHtml(current.rowKey)}">Exclude</button>
+        ${currentChoiceAction}
       </div>
       <div class="wizard-nav">
         <button class="btn secondary small" data-action="wizard-prev"${state.currentReviewIndex > 0 ? "" : " disabled"}>Previous</button>
@@ -1590,19 +1747,7 @@ function rejectReviewCrash(rowKey) {
 }
 
 function toggleCrashExclusion(rowKey) {
-  if (!findReviewStep(rowKey)) {
-    return;
-  }
-  focusReviewStep(rowKey);
-  if (state.reviewExcludeConfirmRow === rowKey) {
-    rejectReviewCrash(rowKey);
-    return;
-  }
-  state.reviewExcludeConfirmRow = rowKey;
-  state.reviewMapPickMode = false;
-  state.reviewMapFocusKey = null;
-  renderReviewQueue();
-  showToast("Click Confirm Exclusion to keep this crash out of the project.");
+  rejectReviewCrash(rowKey);
 }
 
 function clearReviewDecision(rowKey) {
@@ -1757,8 +1902,8 @@ async function startApplyReview() {
   setReviewWorkbenchTab("map");
   renderReviewQueue();
   el.reviewInput.value = "";
-  el.reviewLabel.textContent = "Drop reviewed Coordinate Recovery workbook";
-  el.reviewHint.textContent = "Download, fill approved coordinates, then upload it here.";
+  el.reviewLabel.textContent = "Reviewed coordinate workbook";
+  el.reviewHint.textContent = "Upload a reviewed workbook";
   state.runId = data.runId;
   state.logSeq = 0;
   pollLogs();
@@ -2164,6 +2309,9 @@ function bindInputs() {
   }
   el.applyReview.addEventListener("click", startApplyReview);
   el.applyBrowserReview.addEventListener("click", startApplyBrowserReview);
+  if (el.reviewSkipToResults) {
+    el.reviewSkipToResults.addEventListener("click", () => setUiStage("results"));
+  }
   if (el.resultsResumeReview) {
     el.resultsResumeReview.addEventListener("click", () => setUiStage("review"));
   }
@@ -2178,6 +2326,10 @@ function bindInputs() {
   el.reviewList.addEventListener("click", (event) => {
     const target = event.target.closest("[data-action]");
     if (!target) return;
+    if (target.dataset.action === "continue-results") {
+      setUiStage("results");
+      return;
+    }
     if (target.dataset.action === "toggle-secondary") {
       state.showSecondaryReview = !state.showSecondaryReview;
       state.reviewMapPickMode = false;
@@ -2287,24 +2439,28 @@ function bindInputs() {
     if (el.resultsLabelOrder) {
       el.resultsLabelOrder.selectedIndex = 0;
     }
-    el.dataLabel.textContent = "Drop crash data (CSV or Excel)";
-    el.dataHint.textContent = "Drag a file here or click to browse.";
-    el.kmzLabel.textContent = "Drop KMZ polygon boundary";
-    el.kmzHint.textContent = "Must contain exactly one polygon.";
-    el.pdfLabel.textContent = "Drop alternate PDF data file";
-    el.pdfHint.textContent = "Leave blank to use refined output when available.";
-    el.reviewLabel.textContent = "Drop reviewed Coordinate Recovery workbook";
-    el.reviewHint.textContent = "Download, fill approved coordinates, then upload it here.";
+    el.dataLabel.textContent = "Crash spreadsheet (.csv, .xlsx)";
+    el.dataHint.textContent = "Drop file or click to browse";
+    el.kmzLabel.textContent = "Boundary KMZ (.kmz)";
+    el.kmzHint.textContent = "One polygon only";
+    el.pdfLabel.textContent = "Alternate PDF source (.csv, .xlsx)";
+    el.pdfHint.textContent = "Optional";
+    el.reviewLabel.textContent = "Reviewed coordinate workbook";
+    el.reviewHint.textContent = "Upload a reviewed workbook";
     updateColumnOptions([]);
-    setStatus("idle", "Ready to run", "Add crash data and a KMZ polygon to begin refinement.");
+    setStatus("idle", "Ready to run", "Add crash data, boundary, and columns.");
     setProgressRunning(false);
     el.snapshotTag.textContent = "Idle";
     el.snapshotStatus.textContent = "Waiting for inputs.";
     el.snapshotLastRun.textContent = "No runs yet.";
     el.outputLinks.textContent = "No outputs yet.";
-    el.resultsSummaryLine.textContent = "Run refinement to create project outputs.";
-    el.metrics.innerHTML = "";
-    el.mapPlaceholder.textContent = "Map preview appears after crash data and boundary files are loaded.";
+    if (el.resultsSummaryLine) {
+      el.resultsSummaryLine.innerHTML = '<span class="summary-pill">Run refinement to create outputs.</span>';
+    }
+    if (el.metrics) {
+      el.metrics.innerHTML = "";
+    }
+    el.mapPlaceholder.textContent = "The map appears here once files are loaded.";
     setMapPreview(null);
     renderReviewQueue();
     setReportProgressRunning(false);
@@ -2317,15 +2473,19 @@ function bindInputs() {
     clearUiSession();
   });
   el.popLog.addEventListener("click", openLogWindow);
-  [el.openMap, el.resultsOpenMap].forEach((button) => button && button.addEventListener("click", () => {
-    const url = el.openMap.dataset.url;
+  [el.inputOpenMap, el.openMap, el.resultsOpenMap].forEach((button) => button && button.addEventListener("click", () => {
+    const url = button.dataset.url || (el.openMap && el.openMap.dataset.url);
     if (url) window.open(url, "_blank");
   }));
 }
 
 function wireModals() {
-  el.openGuide.addEventListener("click", () => el.guideModal.showModal());
-  el.openNotes.addEventListener("click", () => el.notesModal.showModal());
+  if (el.openGuide && el.guideModal) {
+    el.openGuide.addEventListener("click", () => el.guideModal.showModal());
+  }
+  if (el.openNotes && el.notesModal) {
+    el.openNotes.addEventListener("click", () => el.notesModal.showModal());
+  }
   document.querySelectorAll("[data-close]").forEach((button) => {
     button.addEventListener("click", () => {
       const dialog = button.closest("dialog");
@@ -2334,8 +2494,59 @@ function wireModals() {
   });
 }
 
+function bindReviewShortcuts() {
+  document.addEventListener("keydown", (event) => {
+    const activeTag = document.activeElement && document.activeElement.tagName;
+    const isTyping = activeTag === "INPUT" || activeTag === "TEXTAREA" || activeTag === "SELECT";
+    if (isTyping || state.uiStage !== "review") {
+      return;
+    }
+
+    const current = getCurrentReviewStep();
+    if (!current) {
+      return;
+    }
+
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      moveToPreviousReviewStep();
+      state.reviewMapPickMode = false;
+      state.reviewMapFocusKey = null;
+      renderReviewQueue();
+      return;
+    }
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      moveToNextReviewStep();
+      state.reviewMapPickMode = false;
+      state.reviewMapFocusKey = null;
+      renderReviewQueue();
+      return;
+    }
+
+    const key = event.key.toLowerCase();
+    if (key === "a" && current.hasSuggestion && current.suggestedInsideBoundary !== false) {
+      event.preventDefault();
+      confirmSuggestedPlacement(current.rowKey);
+      return;
+    }
+    if (key === "p") {
+      event.preventDefault();
+      beginMapPlacement(current.rowKey);
+      return;
+    }
+    if (key === "x") {
+      event.preventDefault();
+      rejectReviewCrash(current.rowKey);
+    }
+  });
+}
+
 function init() {
+  resetTransientInputUi();
+  previewSurfaces().forEach((surface) => bindPreviewSurface(surface.frame, surface.placeholder));
   wireModals();
+  bindReviewShortcuts();
   bindInputs();
   setupDropZone(el.dataDrop, el.dataInput, (file) => {
     if (!validateDataFile(file)) {
@@ -2347,7 +2558,7 @@ function init() {
     el.latColumn.value = "";
     el.lonColumn.value = "";
     el.dataLabel.textContent = file.name;
-    el.dataHint.textContent = "Crash data ready. Confirm columns and run refinement.";
+    el.dataHint.textContent = "Ready";
     fetchHeaders(file);
     updateSummary();
     updateRunButton();
@@ -2361,7 +2572,7 @@ function init() {
     state.kmzFile = file;
     setUiStage("inputs", { persist: false });
     el.kmzLabel.textContent = file.name;
-    el.kmzHint.textContent = "Boundary loaded. Ready to run.";
+    el.kmzHint.textContent = "Ready";
     updateSummary();
     updateRunButton();
     schedulePreviewMap();
@@ -2386,15 +2597,12 @@ function init() {
     state.reviewFile = file;
     setAdvancedToolsOpen(true);
     el.reviewLabel.textContent = file.name;
-    el.reviewHint.textContent = state.runId
-      ? "Ready to re-run refinement with approved coordinate decisions."
-      : "Run refinement first, then apply this reviewed workbook.";
+    el.reviewHint.textContent = "Ready";
     updateSummary();
     updateRunButton();
   });
   window.addEventListener("dragover", (event) => event.preventDefault());
   window.addEventListener("drop", (event) => event.preventDefault());
-  window.addEventListener("resize", () => setReviewWorkbenchTab(state.reviewWorkbenchTab));
   updateSummary();
   renderReviewQueue();
   updateRunButton();

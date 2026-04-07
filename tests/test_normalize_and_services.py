@@ -5,8 +5,14 @@ from pathlib import Path
 import zipfile
 
 from crash_data_refiner.coordinate_recovery import CoordinateReviewDecision
+from crash_data_refiner.geo import load_kmz_polygon
 from crash_data_refiner.normalize import normalize_header, guess_lat_lon_columns
-from crash_data_refiner.spreadsheets import read_spreadsheet, read_spreadsheet_headers, write_spreadsheet
+from crash_data_refiner.spreadsheets import (
+    read_spreadsheet,
+    read_spreadsheet_headers,
+    read_spreadsheet_preview_points,
+    write_spreadsheet,
+)
 from crash_data_refiner.services import (
     coordinate_review_output_path,
     detect_label_order,
@@ -149,6 +155,37 @@ def test_read_spreadsheet_prefers_data_sheet_over_blank_about_sheet(tmp_path: Pa
     assert headers == ["Crash ID", "Latitude", "Longitude"]
     assert data.headers == headers
     assert data.rows == [{"Crash ID": "1", "Latitude": "40.0", "Longitude": "-86.0"}]
+
+
+def test_read_spreadsheet_preview_points_filters_xlsx_rows(tmp_path: Path) -> None:
+    from openpyxl import Workbook
+
+    data_path = tmp_path / "preview.xlsx"
+    workbook = Workbook()
+    workbook.active.title = "About"
+    workbook.active.append(["Notes"])
+    sheet = workbook.create_sheet("Crash Data")
+    sheet.append(["Crash ID", "Latitude", "Longitude"])
+    sheet.append(["1", "1.0", "0.0"])
+    sheet.append(["2", "3.0", "0.0"])
+    sheet.append(["3", "", ""])
+    workbook.save(data_path)
+
+    kmz_path = tmp_path / "boundary.kmz"
+    _write_test_kmz(kmz_path)
+    boundary = load_kmz_polygon(str(kmz_path))
+
+    points, included, excluded, invalid = read_spreadsheet_preview_points(
+        str(data_path),
+        lat_column="Latitude",
+        lon_column="Longitude",
+        boundary=boundary,
+    )
+
+    assert points == [(1.0, 0.0)]
+    assert included == 1
+    assert excluded == 1
+    assert invalid == 1
 
 
 # ---------------------------------------------------------------------------

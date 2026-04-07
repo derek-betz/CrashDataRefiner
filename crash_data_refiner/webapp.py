@@ -9,10 +9,10 @@ from flask import Flask, abort, jsonify, request, send_from_directory
 from werkzeug.utils import secure_filename
 
 from .coordinate_recovery import CoordinateReviewDecision, CoordinateRecoveryReport
-from .geo import BoundaryFilterReport, load_kmz_polygon, parse_coordinate
+from .geo import BoundaryFilterReport, load_kmz_polygon
 from .map_report import write_map_report
-from .normalize import guess_lat_lon_columns, normalize_header
-from .refiner import CrashDataRefiner, RefinementReport
+from .normalize import guess_lat_lon_columns
+from .refiner import RefinementReport
 from .run_contract import RunOutputCounts, load_output_counts_from_refined_path
 from .services import (
     pdf_output_path,
@@ -23,7 +23,7 @@ from .services import (
     summary_output_path,
     kmz_output_path,
 )
-from .spreadsheets import read_spreadsheet, read_spreadsheet_headers
+from .spreadsheets import read_spreadsheet_headers, read_spreadsheet_preview_points
 from .web_files import copy_input_file as _copy_input_file, save_upload as _save_upload
 from .web_review import (
     load_review_queue_for_state as _load_review_queue_for_state,
@@ -51,33 +51,6 @@ MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="")
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
-
-
-def _build_preview_points(
-    rows: List[Dict[str, Any]],
-    *,
-    lat_column: str,
-    lon_column: str,
-    boundary: Any,
-) -> Tuple[List[Tuple[float, float]], int, int, int]:
-    refiner = CrashDataRefiner()
-    included_rows, _excluded_rows, _invalid_rows, report = refiner.filter_rows_by_boundary(
-        rows,
-        boundary=boundary,
-        latitude_column=lat_column,
-        longitude_column=lon_column,
-    )
-    lat_key = normalize_header(lat_column)
-    lon_key = normalize_header(lon_column)
-    points: List[Tuple[float, float]] = []
-    for row in included_rows:
-        lat = parse_coordinate(row.get(lat_key))
-        lon = parse_coordinate(row.get(lon_key))
-        if lat is not None and lon is not None:
-            points.append((lat, lon))
-    return points, report.included_rows, report.excluded_rows, report.invalid_rows
-
-
 def _create_state() -> RunState:
     state = RunState(run_id=_new_id(), created_at=_utcnow())
     with RUNS_LOCK:
@@ -214,22 +187,22 @@ def preview_map() -> Any:
     kmz_upload = request.files.get("boundary_file")
     lat_column = request.form.get("lat_column", "").strip()
     lon_column = request.form.get("lon_column", "").strip()
-    if data_upload is None or not data_upload.filename:
-        return jsonify({"error": "Crash data file is required."}), 400
     if kmz_upload is None or not kmz_upload.filename:
         return jsonify({"error": "KMZ boundary file is required."}), 400
 
-    data_ext = Path(data_upload.filename).suffix.lower()
+    data_ext = Path(data_upload.filename).suffix.lower() if data_upload and data_upload.filename else ""
     kmz_ext = Path(kmz_upload.filename).suffix.lower()
-    if data_ext not in {".csv", ".xlsx", ".xlsm"}:
+    if data_upload and data_upload.filename and data_ext not in {".csv", ".xlsx", ".xlsm"}:
         return jsonify({"error": "Crash data must be CSV or Excel."}), 400
     if kmz_ext != ".kmz":
         return jsonify({"error": "KMZ boundary must be a .kmz file."}), 400
 
     PREVIEW_ROOT.mkdir(parents=True, exist_ok=True)
-    data_file = tempfile.NamedTemporaryFile(delete=False, suffix=data_ext, dir=PREVIEW_ROOT)
-    data_path = Path(data_file.name)
-    data_file.close()
+    data_path: Optional[Path] = None
+    if data_upload and data_upload.filename:
+        data_file = tempfile.NamedTemporaryFile(delete=False, suffix=data_ext, dir=PREVIEW_ROOT)
+        data_path = Path(data_file.name)
+        data_file.close()
     kmz_file = tempfile.NamedTemporaryFile(delete=False, suffix=kmz_ext, dir=PREVIEW_ROOT)
     kmz_path = Path(kmz_file.name)
     kmz_file.close()
@@ -237,25 +210,29 @@ def preview_map() -> Any:
     lat_guess = None
     lon_guess = None
     try:
-        data_upload.save(data_path)
+        if data_upload and data_upload.filename and data_path is not None:
+            data_upload.save(data_path)
         kmz_upload.save(kmz_path)
-        data = read_spreadsheet(str(data_path))
-        if not lat_column or not lon_column:
-            lat_guess, lon_guess = guess_lat_lon_columns(data.headers)
-            if not lat_column and lat_guess:
-                lat_column = lat_guess
-            if not lon_column and lon_guess:
-                lon_column = lon_guess
-        if not lat_column or not lon_column:
-            return jsonify({"error": "Latitude and longitude columns are required."}), 400
-
         boundary = load_kmz_polygon(str(kmz_path))
-        points, included, excluded, invalid = _build_preview_points(
-            data.rows,
-            lat_column=lat_column,
-            lon_column=lon_column,
-            boundary=boundary,
-        )
+        points: List[Tuple[float, float]] = []
+        included = 0
+        excluded = 0
+        invalid = 0
+        if data_path is not None:
+            if not lat_column or not lon_column:
+                headers = read_spreadsheet_headers(str(data_path))
+                lat_guess, lon_guess = guess_lat_lon_columns(headers)
+                if not lat_column and lat_guess:
+                    lat_column = lat_guess
+                if not lon_column and lon_guess:
+                    lon_column = lon_guess
+            if lat_column and lon_column:
+                points, included, excluded, invalid = read_spreadsheet_preview_points(
+                    str(data_path),
+                    lat_column=lat_column,
+                    lon_column=lon_column,
+                    boundary=boundary,
+                )
         preview_name = f"preview_map_{_new_id()}.html"
         preview_path = PREVIEW_ROOT / preview_name
         write_map_report(
@@ -269,10 +246,11 @@ def preview_map() -> Any:
     except Exception as exc:
         return jsonify({"error": f"Unable to build preview map: {exc}"}), 400
     finally:
-        try:
-            data_path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        if data_path is not None:
+            try:
+                data_path.unlink(missing_ok=True)
+            except Exception:
+                pass
         try:
             kmz_path.unlink(missing_ok=True)
         except Exception:
