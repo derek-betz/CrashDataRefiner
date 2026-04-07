@@ -62,6 +62,49 @@
               <div class="progress-bar"></div>
             </div>
           </div>
+          <div class="cone-tracker is-idle" id="cone-tracker">
+            <div class="cone-tracker-header">
+              <div class="cone-tracker-label">Work Zone Tracker</div>
+              <div class="cone-tracker-state" id="cone-tracker-state">Awaiting run</div>
+            </div>
+            <div class="cone-tracker-track">
+              <div class="cone-tracker-road"></div>
+              <div class="cone-tracker-progress" id="cone-tracker-progress"></div>
+              <div class="cone-tracker-bot" id="cone-tracker-bot">
+                <div class="cone-tracker-headlights" aria-hidden="true"></div>
+                <div class="cone-tracker-treads" aria-hidden="true"></div>
+                <div class="cone-tracker-calculator" aria-hidden="true">
+                  <div class="cone-tracker-calculator-screen">Σ</div>
+                  <div class="cone-tracker-calculator-keys">
+                    <span></span><span></span><span></span><span></span>
+                  </div>
+                </div>
+                <img alt="Cone Guy sprite" src="cone-bot.png" />
+              </div>
+              <div class="cone-tracker-math" aria-hidden="true">
+                <span>+</span><span>-</span><span>×</span><span>÷</span><span>=</span>
+              </div>
+              <div class="cone-tracker-nodes">
+                <div class="cone-tracker-node" data-cone-node="load">
+                  <div class="cone-tracker-dot"></div>
+                  <div class="cone-tracker-node-label">Load</div>
+                </div>
+                <div class="cone-tracker-node" data-cone-node="normalize">
+                  <div class="cone-tracker-dot"></div>
+                  <div class="cone-tracker-node-label">Normalize</div>
+                </div>
+                <div class="cone-tracker-node" data-cone-node="filter">
+                  <div class="cone-tracker-dot"></div>
+                  <div class="cone-tracker-node-label">Filter</div>
+                </div>
+                <div class="cone-tracker-node" data-cone-node="output">
+                  <div class="cone-tracker-dot"></div>
+                  <div class="cone-tracker-node-label">Output</div>
+                </div>
+              </div>
+            </div>
+            <div class="cone-tracker-note" id="cone-tracker-note">Waiting for run.</div>
+          </div>
         </section>
 
         <section class="stage-stack">

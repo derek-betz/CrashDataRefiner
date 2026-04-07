@@ -33,6 +33,13 @@ const state = {
   previewTimer: null,
   previewRequestId: 0,
   headerRequestId: 0,
+  coneGuy: {
+    milestone: "load",
+    progress: 10,
+    driveTimer: null,
+    settleTimer: null,
+    calcCycleTimer: null,
+  },
 };
 
 const el = {
@@ -132,6 +139,12 @@ const el = {
   openGuide: document.getElementById("open-guide"),
   openNotes: document.getElementById("open-notes"),
   toast: document.getElementById("toast"),
+  coneTracker: document.getElementById("cone-tracker"),
+  coneTrackerState: document.getElementById("cone-tracker-state"),
+  coneTrackerProgress: document.getElementById("cone-tracker-progress"),
+  coneTrackerNote: document.getElementById("cone-tracker-note"),
+  coneTrackerCalcScreen: document.querySelector(".cone-tracker-calculator-screen"),
+  coneTrackerNodes: Array.from(document.querySelectorAll("[data-cone-node]")),
 };
 
 function showToast(message) {
@@ -1797,6 +1810,7 @@ async function startRun() {
   setStatus("running", "Refinement running", "Crash data pipeline is processing.");
   setProgressRunning(true);
   setReportProgressRunning(false);
+  updateConeTracker("running");
   el.runRefine.disabled = true;
   el.generateReport.disabled = true;
   el.applyReview.disabled = true;
@@ -1832,6 +1846,7 @@ async function startReport() {
   setStatus("running", "Report running", "Generating PDF crash report.");
   setProgressRunning(true);
   setReportProgressRunning(true);
+  updateConeTracker("running");
   el.runRefine.disabled = true;
   el.generateReport.disabled = true;
   el.applyReview.disabled = true;
@@ -1869,6 +1884,7 @@ async function startApplyReview() {
   setStatus("running", "Applying review decisions", "Re-running refinement with approved coordinates.");
   setProgressRunning(true);
   setReportProgressRunning(false);
+  updateConeTracker("running");
   el.runRefine.disabled = true;
   el.generateReport.disabled = true;
   el.applyReview.disabled = true;
@@ -1920,6 +1936,7 @@ async function startApplyBrowserReview() {
   setStatus("running", "Applying browser review", "Re-running refinement with reviewed crash placements.");
   setProgressRunning(true);
   setReportProgressRunning(false);
+  updateConeTracker("running");
   el.runRefine.disabled = true;
   el.generateReport.disabled = true;
   el.applyReview.disabled = true;
@@ -1968,6 +1985,7 @@ async function startRelabel() {
   setStatus("running", "Regenerating labels", "Updating the refined spreadsheet and KMZ numbering.");
   setProgressRunning(true);
   setReportProgressRunning(false);
+  updateConeTracker("running");
   el.runRefine.disabled = true;
   el.generateReport.disabled = true;
   el.applyReview.disabled = true;
@@ -1997,6 +2015,173 @@ async function startRelabel() {
   }
 }
 
+/* ── Cone Guy Tracker Logic ──────────────────────────────────────────── */
+
+const CONE_MILESTONES = [
+  { id: "load", label: "Load", progress: 18 },
+  { id: "normalize", label: "Normalize", progress: 40 },
+  { id: "filter", label: "Filter", progress: 65 },
+  { id: "output", label: "Output", progress: 90 },
+];
+
+const CONE_CALC_VALUES = ["Σ", "N=?", "✓18", "?7", "→KMZ", "Σ"];
+
+function getConeRuntimeSignals() {
+  const texts = state.logLines.slice(-50);
+  const combined = texts.join(" ").toLowerCase();
+  return {
+    hasLoaded: combined.includes("loaded") && combined.includes("crash rows"),
+    hasBoundary: combined.includes("loaded kmz boundary"),
+    hasRecovery: combined.includes("coordinate recovery"),
+    hasFilter: combined.includes("boundary filter complete"),
+    hasLabels: combined.includes("kmz labels ordered"),
+    hasRefined: combined.includes("refined output saved"),
+    hasKmz: combined.includes("kmz report generated"),
+    hasValidated: combined.includes("output invariants validated"),
+    combined,
+  };
+}
+
+function getConeMilestone(phase) {
+  if (phase === "success") return "output";
+  if (phase === "error") return "normalize";
+  if (phase === "idle") return "load";
+  const sig = getConeRuntimeSignals();
+  if (sig.hasRefined || sig.hasKmz || sig.hasValidated) return "output";
+  if (sig.hasFilter || sig.hasLabels) return "filter";
+  if (sig.hasRecovery || (sig.hasLoaded && sig.hasBoundary)) return "normalize";
+  return "load";
+}
+
+function getConeProgress(phase, milestoneId) {
+  if (phase === "success") return 90;
+  if (phase === "error") return 40;
+  const sig = getConeRuntimeSignals();
+  if (milestoneId === "output") {
+    if (sig.hasValidated) return 90;
+    if (sig.hasKmz) return 86;
+    if (sig.hasRefined) return 78;
+    return 72;
+  }
+  if (milestoneId === "filter") {
+    if (sig.hasLabels) return 62;
+    if (sig.hasFilter) return 55;
+    return 48;
+  }
+  if (milestoneId === "normalize") {
+    if (sig.hasRecovery) return 35;
+    if (sig.hasLoaded && sig.hasBoundary) return 28;
+    if (sig.hasLoaded || sig.hasBoundary) return 22;
+    return 18;
+  }
+  return 10;
+}
+
+function getConeNote(phase, milestoneId) {
+  if (phase === "success") return "Lane clear.";
+  if (phase === "error") return "Check run log.";
+  if (phase === "idle") return "Waiting for run.";
+  if (milestoneId === "load") return "Reading crash data.";
+  if (milestoneId === "normalize") return "Recovering coordinates.";
+  if (milestoneId === "filter") return "Filtering by boundary.";
+  if (milestoneId === "output") return "Writing outputs.";
+  return "Processing.";
+}
+
+function setConeMotion(root, nextProgress, phase, milestoneId) {
+  if (state.coneGuy.progress === nextProgress) return;
+  const wasBeforeFinish = state.coneGuy.progress < 90;
+  state.coneGuy.progress = nextProgress;
+  root.classList.add("is-driving");
+  root.classList.remove("is-settling");
+  if (state.coneGuy.driveTimer) window.clearTimeout(state.coneGuy.driveTimer);
+  state.coneGuy.driveTimer = window.setTimeout(() => {
+    root.classList.remove("is-driving");
+    state.coneGuy.driveTimer = null;
+    if ((phase === "success" || milestoneId === "output") && wasBeforeFinish) {
+      root.classList.add("is-settling");
+      if (state.coneGuy.settleTimer) window.clearTimeout(state.coneGuy.settleTimer);
+      state.coneGuy.settleTimer = window.setTimeout(() => {
+        root.classList.remove("is-settling");
+        state.coneGuy.settleTimer = null;
+      }, 1800);
+    }
+  }, 3000);
+}
+
+function updateConeTracker(phase) {
+  if (!el.coneTracker) return;
+  if (!phase) {
+    phase = state.pollTimer ? "running" : "idle";
+  }
+  const milestoneId = getConeMilestone(phase);
+  const milestone = CONE_MILESTONES.find((m) => m.id === milestoneId) || CONE_MILESTONES[0];
+  const progress = getConeProgress(phase, milestoneId);
+  const root = el.coneTracker;
+
+  root.classList.remove(
+    "is-idle", "is-running", "is-success", "is-error",
+    "phase-load", "phase-normalize", "phase-filter", "phase-output"
+  );
+  root.classList.add(`is-${phase}`);
+  root.classList.add(`phase-${milestoneId}`);
+  root.style.setProperty("--cone-progress", `${progress}%`);
+  setConeMotion(root, progress, phase, milestoneId);
+
+  if (el.coneTrackerState) {
+    el.coneTrackerState.textContent =
+      phase === "success" ? "Lane clear" :
+      phase === "error" ? "Needs review" :
+      phase === "running" ? milestone.label :
+      "Awaiting run";
+  }
+  if (el.coneTrackerNote) {
+    el.coneTrackerNote.textContent = getConeNote(phase, milestoneId);
+  }
+
+  const prevMilestone = state.coneGuy.milestone;
+  el.coneTrackerNodes.forEach((node) => {
+    const nodeMilestone = node.dataset.coneNode;
+    const nodeProgress = CONE_MILESTONES.find((m) => m.id === nodeMilestone)?.progress ?? 0;
+    node.classList.remove("is-active", "is-done");
+    if (nodeMilestone === milestoneId) {
+      node.classList.add("is-active");
+      if (prevMilestone !== milestoneId) {
+        node.classList.remove("is-flash");
+        void node.offsetWidth;
+        node.classList.add("is-flash");
+        setTimeout(() => node.classList.remove("is-flash"), 400);
+      }
+    } else if (nodeProgress < progress || phase === "success") {
+      node.classList.add("is-done");
+    }
+  });
+  state.coneGuy.milestone = milestoneId;
+  syncConeCalcTimer(milestoneId);
+}
+
+function setConeCalcScreen(text) {
+  if (!el.coneTrackerCalcScreen) return;
+  el.coneTrackerCalcScreen.textContent = text;
+  const sx = text.length <= 1 ? 1 : Math.min(1, 1.6 / text.length);
+  el.coneTrackerCalcScreen.style.transform = `scaleX(${sx})`;
+  el.coneTrackerCalcScreen.style.transformOrigin = "right center";
+}
+
+function syncConeCalcTimer(milestoneId) {
+  if (milestoneId === "filter" && !state.coneGuy.calcCycleTimer) {
+    let idx = 0;
+    state.coneGuy.calcCycleTimer = setInterval(() => {
+      idx = (idx + 1) % CONE_CALC_VALUES.length;
+      setConeCalcScreen(CONE_CALC_VALUES[idx]);
+    }, 900);
+  } else if (milestoneId !== "filter" && state.coneGuy.calcCycleTimer) {
+    clearInterval(state.coneGuy.calcCycleTimer);
+    state.coneGuy.calcCycleTimer = null;
+    setConeCalcScreen("Σ");
+  }
+}
+
 async function pollLogs() {
   if (!state.runId) return;
   const response = await fetch(`/api/run/${state.runId}/log?since=${state.logSeq}`);
@@ -2007,6 +2192,9 @@ async function pollLogs() {
   if (data.status === "running" && data.message) {
     el.statusDetail.textContent = data.message;
     el.snapshotStatus.textContent = data.message;
+  }
+  if (data.status === "running") {
+    updateConeTracker("running");
   }
   if (data.status && data.status !== "running") {
     window.clearInterval(state.pollTimer);
@@ -2020,6 +2208,7 @@ async function finalizeRun(status) {
   if (!response.ok) {
     setStatus("error", "Run failed", "Unable to retrieve run status.");
     setProgressRunning(false);
+    updateConeTracker("error");
     state.reviewQueue = [];
     renderReviewQueue();
     updateRunButton();
@@ -2109,6 +2298,7 @@ async function finalizeRun(status) {
   }
   setProgressRunning(false);
   setReportProgressRunning(false);
+  updateConeTracker(status === "success" ? "success" : "error");
   updateRunButton();
   updateStageAvailability();
   updateResultsSummary();
@@ -2450,6 +2640,7 @@ function bindInputs() {
     updateColumnOptions([]);
     setStatus("idle", "Ready to run", "Add crash data, boundary, and columns.");
     setProgressRunning(false);
+    updateConeTracker("idle");
     el.snapshotTag.textContent = "Idle";
     el.snapshotStatus.textContent = "Waiting for inputs.";
     el.snapshotLastRun.textContent = "No runs yet.";
