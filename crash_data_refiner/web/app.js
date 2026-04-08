@@ -30,6 +30,7 @@ const state = {
   pollTimer: null,
   logWindow: null,
   mapReportName: null,
+  previewMapUrl: null,
   previewTimer: null,
   previewRequestId: 0,
   headerRequestId: 0,
@@ -39,7 +40,10 @@ const state = {
     driveTimer: null,
     settleTimer: null,
     calcCycleTimer: null,
+    calcSignature: "",
   },
+  reviewAdvanceFeedback: null,
+  reviewAdvanceFeedbackTimer: null,
 };
 
 const el = {
@@ -83,6 +87,8 @@ const el = {
   snapshotTag: document.getElementById("snapshot-tag"),
   snapshotStatus: document.getElementById("snapshot-status"),
   snapshotLastRun: document.getElementById("snapshot-last-run"),
+  workflowFocus: document.getElementById("workflow-focus"),
+  workflowWarning: document.getElementById("workflow-warning"),
   metrics: document.getElementById("metrics"),
   outputLinks: document.getElementById("output-links"),
   stageKicker: document.getElementById("stage-kicker"),
@@ -107,9 +113,12 @@ const el = {
   inputMapPlaceholder: document.getElementById("input-map-placeholder"),
   mapSubtitle: document.getElementById("map-subtitle"),
   mapMode: document.getElementById("map-mode"),
+  centerSuggestedPoint: document.getElementById("center-suggested-point"),
   wizardMap: document.getElementById("wizard-map"),
   wizardMapToolbar: document.getElementById("wizard-map-toolbar"),
+  wizardMapContext: document.getElementById("wizard-map-context"),
   wizardMapSelection: document.getElementById("wizard-map-selection"),
+  wizardMapShortcuts: document.getElementById("wizard-map-shortcuts"),
   clearMapSelection: document.getElementById("clear-map-selection"),
   inputOpenMap: document.getElementById("input-open-map"),
   openMap: document.getElementById("open-map"),
@@ -147,10 +156,102 @@ const el = {
   coneTrackerNodes: Array.from(document.querySelectorAll("[data-cone-node]")),
 };
 
+const SESSION_KEY = "crash-data-refiner-ui-state-v2";
+const LEGACY_SESSION_KEYS = ["crash-data-refiner-ui-state"];
+const UI_BUSY_CONTROLS = [
+  "runRefine",
+  "generateReport",
+  "resultsGenerateReport",
+  "applyReview",
+  "applyBrowserReview",
+  "resultsRelabel",
+  "labelOrder",
+  "resultsLabelOrder",
+  "stageStepInputs",
+  "stageStepReview",
+  "stageStepResults",
+];
+
+async function parseJsonSafe(response) {
+  try {
+    return await response.json();
+  } catch (_error) {
+    return {};
+  }
+}
+
+function clearPollingTimer() {
+  if (!state.pollTimer) return;
+  window.clearInterval(state.pollTimer);
+  state.pollTimer = null;
+}
+
+function setUiBusy(isBusy) {
+  UI_BUSY_CONTROLS.forEach((key) => {
+    const control = el[key];
+    if (!control) return;
+    if (isBusy) {
+      control.dataset.busyDisabled = control.disabled ? "true" : "false";
+      control.disabled = true;
+      return;
+    }
+    if (control.dataset.busyDisabled === "true") {
+      control.disabled = true;
+    }
+    delete control.dataset.busyDisabled;
+  });
+}
+
+function unlockUiAfterRun() {
+  setUiBusy(false);
+  updateRunButton();
+  updateReviewButton();
+  updateReportButton();
+  updateRelabelButton();
+  updateStageAvailability();
+  updateLabelOrderControls();
+}
+
+function handleRunConnectionFailure(
+  title,
+  detail,
+  toastMessage,
+  { clearSession = false } = {}
+) {
+  clearPollingTimer();
+  setProgressRunning(false);
+  setReportProgressRunning(false);
+  setStatus("error", title, detail);
+  el.snapshotTag.textContent = "Failed";
+  el.snapshotStatus.textContent = detail;
+  updateConeTracker("error");
+  if (clearSession) {
+    state.runId = null;
+    clearUiSession();
+  }
+  showToast(toastMessage);
+  unlockUiAfterRun();
+}
+
 function showToast(message) {
   el.toast.textContent = message;
   el.toast.classList.add("show");
   window.setTimeout(() => el.toast.classList.remove("show"), 3200);
+}
+
+function setReviewAdvanceFeedback(kind) {
+  state.reviewAdvanceFeedback = {
+    kind,
+    createdAt: Date.now(),
+  };
+  if (state.reviewAdvanceFeedbackTimer) {
+    window.clearTimeout(state.reviewAdvanceFeedbackTimer);
+  }
+  state.reviewAdvanceFeedbackTimer = window.setTimeout(() => {
+    state.reviewAdvanceFeedback = null;
+    state.reviewAdvanceFeedbackTimer = null;
+    renderReviewQueue();
+  }, 2200);
 }
 
 function setStatus(stateName, title, detail) {
@@ -251,8 +352,6 @@ function clearPendingExclusion(rowKey = null) {
   }
 }
 
-const SESSION_KEY = "crash-data-refiner-ui-state";
-
 function saveUiSession() {
   if (state.isBootstrappingUi || state.isRestoringSession) {
     return;
@@ -269,6 +368,7 @@ function saveUiSession() {
     runInputs: state.runInputs,
     lastRunSummary: state.lastRunSummary,
     lastOutputs: state.lastOutputs,
+    previewMapUrl: state.previewMapUrl,
     detailsPanelOpen: state.detailsPanelOpen,
     advancedToolsOpen: state.advancedToolsOpen,
   };
@@ -277,10 +377,14 @@ function saveUiSession() {
 
 function clearUiSession() {
   window.sessionStorage.removeItem(SESSION_KEY);
+  LEGACY_SESSION_KEYS.forEach((key) => window.sessionStorage.removeItem(key));
 }
 
 function readUiSession() {
-  const raw = window.sessionStorage.getItem(SESSION_KEY);
+  const raw = window.sessionStorage.getItem(SESSION_KEY)
+    || LEGACY_SESSION_KEYS
+      .map((key) => window.sessionStorage.getItem(key))
+      .find(Boolean);
   if (!raw) return null;
   try {
     return JSON.parse(raw);
@@ -349,6 +453,7 @@ function resetTransientInputUi() {
     el.columnHint.hidden = false;
     el.columnHint.textContent = "Columns will populate automatically after upload.";
   }
+  state.previewMapUrl = null;
   updateColumnOptions([]);
   setLabelOrderSelection("auto", { scope: "input" });
 }
@@ -524,6 +629,7 @@ function renderStageChrome() {
     if (el.stageTitle) el.stageTitle.textContent = "Load project files";
     if (el.stageDescription) el.stageDescription.textContent = "";
     if (el.stageNext) el.stageNext.textContent = "";
+    updateWorkflowGuidance();
     return;
   }
 
@@ -532,6 +638,7 @@ function renderStageChrome() {
     if (el.stageTitle) el.stageTitle.textContent = "Review crashes";
     if (el.stageDescription) el.stageDescription.textContent = "";
     if (el.stageNext) el.stageNext.textContent = "";
+    updateWorkflowGuidance();
     return;
   }
 
@@ -539,6 +646,66 @@ function renderStageChrome() {
   if (el.stageTitle) el.stageTitle.textContent = "Download outputs";
   if (el.stageDescription) el.stageDescription.textContent = "";
   if (el.stageNext) el.stageNext.textContent = "";
+  updateWorkflowGuidance();
+}
+
+function describeCompletedAction(runKind, usedReviewWorkbook) {
+  if (runKind === "report") return "Last action: PDF report generated";
+  if (runKind === "relabel") return "Last action: KMZ labels regenerated";
+  if (usedReviewWorkbook) return "Last action: Review decisions applied";
+  return "Last action: Refinement completed";
+}
+
+function getCurrentRunFocus() {
+  if (state.pollTimer || el.statusBar.dataset.state === "running") {
+    return `Current run: ${el.statusTitle.textContent || "Processing"}`
+      .replace(/\.$/, "")
+      .concat(".");
+  }
+  if (state.uiStage === "inputs" && state.runId && !state.dataFile && !state.kmzFile) {
+    return reviewPendingCount()
+      ? "Previous run restored. Resume review or load new project files."
+      : "Previous run restored. Review results or load new project files.";
+  }
+  if (state.uiStage === "review" && state.runId) {
+    return "Current run: review likely in-project crashes and place missing coordinates.";
+  }
+  if (state.uiStage === "results" && state.runId) {
+    return "Current run: outputs are ready for download, relabeling, or report generation.";
+  }
+  if (state.dataFile || state.kmzFile) {
+    return "Current run: project inputs are loaded and ready for refinement.";
+  }
+  return "Current run: waiting for project files.";
+}
+
+function updateWorkflowGuidance() {
+  if (el.workflowFocus) {
+    el.workflowFocus.textContent = getCurrentRunFocus();
+  }
+  if (!el.workflowWarning) return;
+
+  const isFreshInputsScreen = state.uiStage === "inputs" && !state.dataFile && !state.kmzFile;
+  let warning = "";
+  if (reviewPendingCount() && state.uiStage === "results") {
+    warning = `${reviewPendingCount()} review candidate(s) are still available if you want to inspect crash placements.`;
+  } else if (!isFreshInputsScreen && !state.showSecondaryReview && (state.reviewSecondaryQueue || []).length) {
+    warning = `${state.reviewSecondaryQueue.length} lower-likelihood crash candidate(s) are hidden until requested.`;
+  } else if (state.uiStage === "inputs" && state.dataFile && state.kmzFile && !(el.latColumn.value.trim() && el.lonColumn.value.trim())) {
+    warning = "Confirm latitude and longitude columns before running refinement.";
+  }
+
+  el.workflowWarning.hidden = !warning;
+  el.workflowWarning.textContent = warning;
+}
+
+function syncConeTrackerToUiContext(runStatus) {
+  if (runStatus === "running") {
+    updateConeTracker("running");
+    return;
+  }
+  // Restored sessions should feel calm and ready, not replay completion theatrics.
+  updateConeTracker("idle", { instant: true });
 }
 
 function updateReadinessChecklist() {
@@ -721,14 +888,14 @@ async function fetchHeaders(file) {
       return;
     }
     if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
+      const data = await parseJsonSafe(response);
       if (el.columnHint) {
         el.columnHint.textContent = data.error || "Unable to detect columns.";
       }
       return;
     }
 
-    const data = await response.json();
+    const data = await parseJsonSafe(response);
     const headers = data.headers || [];
     if (headers.length) {
       updateColumnOptions(headers);
@@ -750,6 +917,13 @@ async function fetchHeaders(file) {
     updateSummary();
     updateRunButton();
     schedulePreviewMap();
+  } catch (_error) {
+    if (requestId !== state.headerRequestId || state.dataFile !== file) {
+      return;
+    }
+    if (el.columnHint) {
+      el.columnHint.textContent = "Unable to detect columns right now.";
+    }
   } finally {
     if (requestId === state.headerRequestId) {
       setColumnDetectionBusy(false);
@@ -805,50 +979,120 @@ function renderOutputs(outputs) {
   el.outputLinks.innerHTML = "";
   const describeOutput = (name) => {
     if (/_refined\./i.test(name)) {
-      return { title: "Refined crash data", order: 0 };
+      return {
+        title: "Refined crash data",
+        order: 0,
+        group: "Primary deliverables",
+        detail: "Cleaned crash workbook filtered to the project boundary and ready for analysis.",
+      };
     }
     if (/Rejected Coordinate Review/i.test(name)) {
-      return { title: "Excluded crash review output", order: 2 };
+      return {
+        title: "Excluded crash review output",
+        order: 4,
+        group: "Review artifacts",
+        detail: "Rows explicitly kept out of the project during manual review.",
+      };
     }
     if (/Coordinate Recovery Review/i.test(name)) {
-      return { title: "Coordinate recovery workbook", order: 3 };
+      return {
+        title: "Coordinate recovery workbook",
+        order: 3,
+        group: "Review artifacts",
+        detail: "Workbook of crashes that still need coordinate review outside the browser wizard.",
+      };
     }
     if (/\.kmz$/i.test(name)) {
-      return { title: "Crash KMZ", order: 1 };
+      return {
+        title: "Crash KMZ",
+        order: 1,
+        group: "Primary deliverables",
+        detail: "Map-ready KMZ with crash labels and placemarks for field review and Google Earth.",
+      };
     }
     if (/Without Valid Lat-Long/i.test(name)) {
-      return { title: "Rows missing coordinates", order: 4 };
+      return {
+        title: "Rows missing coordinates",
+        order: 5,
+        group: "Review artifacts",
+        detail: "Reference workbook of source rows that arrived without usable latitude and longitude values.",
+      };
     }
     if (/\.pdf$/i.test(name)) {
-      return { title: "PDF crash report", order: 5 };
+      return {
+        title: "PDF crash report",
+        order: 2,
+        group: "Primary deliverables",
+        detail: "Shareable formatted report of refined crash records and summary output.",
+      };
     }
-    return { title: name, order: 10 };
+    return {
+      title: name,
+      order: 10,
+      group: "Additional files",
+      detail: "Supporting run output.",
+    };
   };
 
+  const groupedOutputs = new Map();
   outputs
     .map((item) => ({ item, meta: describeOutput(item.name) }))
     .sort((a, b) => a.meta.order - b.meta.order || a.item.name.localeCompare(b.item.name))
     .forEach(({ item, meta }) => {
+      const groupKey = meta.group;
+      if (!groupedOutputs.has(groupKey)) {
+        groupedOutputs.set(groupKey, []);
+      }
+      groupedOutputs.get(groupKey).push({ item, meta });
+    });
+
+  groupedOutputs.forEach((items, groupKey) => {
+    const section = document.createElement("section");
+    section.className = "output-group";
+    section.innerHTML = `
+      <div class="output-group-title">${escapeHtml(groupKey)}</div>
+      <div class="output-group-body"></div>
+    `;
+    const body = section.querySelector(".output-group-body");
+    items.forEach(({ item, meta }) => {
       const wrapper = document.createElement("div");
       wrapper.className = "output-item";
+      wrapper.dataset.testid = `output-item-${slugify(meta.title)}`;
       wrapper.innerHTML = `
-        <div class="output-item-title">${escapeHtml(meta.title)}</div>
-        <a href="/api/run/${state.runId}/download/${encodeURIComponent(item.name)}" target="_blank">${escapeHtml(item.name)}</a>
+        <div>
+          <div class="output-item-title">${escapeHtml(meta.title)}</div>
+          <div class="output-item-detail">${escapeHtml(meta.detail)}</div>
+        </div>
+        <a data-testid="output-link-${slugify(item.name)}" href="/api/run/${state.runId}/download/${encodeURIComponent(item.name)}" target="_blank">${escapeHtml(item.name)}</a>
       `;
-      el.outputLinks.appendChild(wrapper);
+      body.appendChild(wrapper);
     });
+    el.outputLinks.appendChild(section);
+  });
   updateResultsSummary();
 }
 
-function setMapPreview(mapName, mapUrl) {
+function setMapPreview(
+  mapName,
+  mapUrl,
+  { rememberPreview = false, clearStoredPreview = false } = {}
+) {
   state.mapReportName = mapName;
-  const url = mapUrl || (mapName ? `/api/run/${state.runId}/view/${encodeURIComponent(mapName)}` : null);
+  if (clearStoredPreview) {
+    state.previewMapUrl = null;
+  }
+  const derivedUrl = mapUrl || (mapName ? `/api/run/${state.runId}/view/${encodeURIComponent(mapName)}` : null);
+  if (rememberPreview && derivedUrl) {
+    state.previewMapUrl = derivedUrl;
+  }
+  const url = derivedUrl || (!mapName ? state.previewMapUrl || null : null);
   if (!url) {
     previewSurfaces().forEach((surface) => resetPreviewSurface(surface));
     if (el.resultsOpenMap) {
       el.resultsOpenMap.disabled = true;
       delete el.resultsOpenMap.dataset.url;
     }
+    saveUiSession();
     return;
   }
   previewSurfaces().forEach((surface) => loadPreviewSurface(surface, url));
@@ -856,6 +1100,7 @@ function setMapPreview(mapName, mapUrl) {
     el.resultsOpenMap.disabled = false;
     el.resultsOpenMap.dataset.url = url;
   }
+  saveUiSession();
 }
 
 function schedulePreviewMap() {
@@ -889,33 +1134,46 @@ async function requestPreviewMap() {
     form.append("lon_column", lonColumn);
   }
 
-  const response = await fetch("/api/preview-map", { method: "POST", body: form });
-  if (requestId !== state.previewRequestId) return;
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
+  try {
+    const response = await fetch("/api/preview-map", { method: "POST", body: form });
+    if (requestId !== state.previewRequestId) return;
+    if (!response.ok) {
+      const data = await parseJsonSafe(response);
+      previewSurfaces().forEach((surface) => {
+        surface.frame.dataset.loaded = "false";
+        surface.placeholder.textContent = data.error || "Map preview unavailable.";
+        surface.placeholder.style.display = "flex";
+        if (surface.button) {
+          surface.button.disabled = true;
+          delete surface.button.dataset.url;
+        }
+      });
+      return;
+    }
+    const data = await parseJsonSafe(response);
+    if (data.latGuess && !el.latColumn.value.trim()) {
+      el.latColumn.value = data.latGuess;
+    }
+    if (data.lonGuess && !el.lonColumn.value.trim()) {
+      el.lonColumn.value = data.lonGuess;
+    }
+    if (data.previewUrl) {
+      setMapPreview(null, data.previewUrl, { rememberPreview: true });
+    }
+    updateSummary();
+    updateRunButton();
+  } catch (_error) {
+    if (requestId !== state.previewRequestId) return;
     previewSurfaces().forEach((surface) => {
       surface.frame.dataset.loaded = "false";
-      surface.placeholder.textContent = data.error || "Map preview unavailable.";
+      surface.placeholder.textContent = "Map preview unavailable.";
       surface.placeholder.style.display = "flex";
       if (surface.button) {
         surface.button.disabled = true;
         delete surface.button.dataset.url;
       }
     });
-    return;
   }
-  const data = await response.json().catch(() => ({}));
-  if (data.latGuess && !el.latColumn.value.trim()) {
-    el.latColumn.value = data.latGuess;
-  }
-  if (data.lonGuess && !el.lonColumn.value.trim()) {
-    el.lonColumn.value = data.lonGuess;
-  }
-  if (data.previewUrl) {
-    setMapPreview(null, data.previewUrl);
-  }
-  updateSummary();
-  updateRunButton();
 }
 
 function buildRunFormData() {
@@ -974,6 +1232,66 @@ function buildRelabelFormData() {
 function formatCoordinate(value) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric.toFixed(6) : "--";
+}
+
+function formatDistanceFeet(value) {
+  if (!Number.isFinite(value)) return "";
+  if (value >= 5280) {
+    return `${(value / 5280).toFixed(1)} mi away`;
+  }
+  return `${Math.round(value).toLocaleString()} ft away`;
+}
+
+function distanceFeetBetween(left, right) {
+  const toRadians = (value) => (value * Math.PI) / 180;
+  const earthRadiusMeters = 6371000;
+  const dLat = toRadians(right.latitude - left.latitude);
+  const dLon = toRadians(right.longitude - left.longitude);
+  const lat1 = toRadians(left.latitude);
+  const lat2 = toRadians(right.latitude);
+  const a = Math.sin(dLat / 2) ** 2
+    + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return earthRadiusMeters * c * 3.28084;
+}
+
+function getReviewReferencePoint(step) {
+  const draftPlacement = getDraftPlacement(step);
+  if (draftPlacement) return draftPlacement;
+  const decisionPlacement = getDecisionPlacement(step);
+  if (decisionPlacement) return decisionPlacement;
+  if (step && step.hasSuggestion && step.suggestedLatitude != null && step.suggestedLongitude != null) {
+    return {
+      latitude: step.suggestedLatitude,
+      longitude: step.suggestedLongitude,
+    };
+  }
+  return null;
+}
+
+function getNearbyContextCrashes(step, limit = 3) {
+  const referencePoint = getReviewReferencePoint(step);
+  const contextCrashes = (state.reviewMapData && state.reviewMapData.contextCrashes) || [];
+  if (!referencePoint || !contextCrashes.length) return [];
+
+  return contextCrashes
+    .map((crash) => ({
+      ...crash,
+      distanceFeet: Math.round(
+        distanceFeetBetween(referencePoint, {
+          latitude: crash.latitude,
+          longitude: crash.longitude,
+        })
+      ),
+    }))
+    .sort((left, right) => left.distanceFeet - right.distanceFeet)
+    .slice(0, limit);
+}
+
+function getReviewRouteContext(step) {
+  if (!step) return "Route and intersection context appears here.";
+  const parts = [step.title, step.detail].filter((part) => String(part || "").trim());
+  return parts.length ? parts.join(" • ") : "Location context unavailable.";
 }
 
 function getVisibleReviewSteps() {
@@ -1124,14 +1442,34 @@ function ensureReviewMap() {
       attribution: "Tiles (c) Esri",
     }
   );
+  const transportation = window.L.tileLayer(
+    "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}",
+    {
+      maxZoom: 19,
+      attribution: "Tiles (c) Esri",
+      pane: "overlayPane",
+    }
+  );
+  const labels = window.L.tileLayer(
+    "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+    {
+      maxZoom: 19,
+      attribution: "Tiles (c) Esri",
+      pane: "overlayPane",
+    }
+  );
   const streets = window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19,
     attribution: "&copy; OpenStreetMap contributors",
   });
+  const imageryWithRoads = window.L.layerGroup([imagery, transportation, labels]);
 
-  imagery.addTo(state.reviewMap);
+  imageryWithRoads.addTo(state.reviewMap);
   state.reviewMapLayers = {
+    imageryWithRoads,
     imagery,
+    transportation,
+    labels,
     streets,
     boundary: null,
     context: window.L.layerGroup().addTo(state.reviewMap),
@@ -1140,6 +1478,7 @@ function ensureReviewMap() {
   };
   window.L.control.layers(
     {
+      "Imagery + roads": imageryWithRoads,
       Imagery: imagery,
       Streets: streets,
     },
@@ -1164,9 +1503,16 @@ function ensureReviewMap() {
 function showProjectPreviewMap() {
   el.mapMode.textContent = "Project Map";
   el.mapSubtitle.textContent = "Preview the project boundary and current outputs.";
+  if (el.centerSuggestedPoint) {
+    el.centerSuggestedPoint.hidden = true;
+    el.centerSuggestedPoint.disabled = true;
+  }
   el.wizardMap.hidden = true;
   el.mapFrame.style.display = "block";
   el.wizardMapToolbar.hidden = true;
+  if (el.wizardMapContext) {
+    el.wizardMapContext.textContent = "Route and intersection context appears here.";
+  }
   el.clearMapSelection.disabled = true;
   if (el.mapFrame.getAttribute("src") && el.mapFrame.dataset.loaded === "true") {
     el.mapPlaceholder.style.display = "none";
@@ -1194,7 +1540,17 @@ function renderReviewMap() {
     }
 
     el.mapMode.textContent = "Review Wizard";
-    el.mapSubtitle.textContent = `Crash ${state.currentReviewIndex + 1} of ${getVisibleReviewSteps().length}`;
+    el.mapSubtitle.textContent = `${current.title} ${current.detail ? `• ${current.detail}` : ""}`;
+    if (el.wizardMapContext) {
+      el.wizardMapContext.textContent = getReviewRouteContext(current);
+    }
+    if (el.wizardMapShortcuts) {
+      el.wizardMapShortcuts.textContent = "Shortcuts: S suggested, C confirm pin, X exclude, N next.";
+    }
+    if (el.centerSuggestedPoint) {
+      el.centerSuggestedPoint.hidden = !hasUsableSuggestedPoint;
+      el.centerSuggestedPoint.disabled = !hasUsableSuggestedPoint;
+    }
     el.mapFrame.style.display = "none";
     el.wizardMap.hidden = false;
     el.mapPlaceholder.style.display = "none";
@@ -1455,12 +1811,12 @@ function renderReviewQueue() {
     el.reviewList.className = "review-list empty";
     el.reviewList.innerHTML = state.runId
       ? `
-        <section class="wizard-empty review-empty-callout">
+        <section class="wizard-empty review-empty-callout" data-testid="review-empty-state">
           <div class="review-empty-kicker">Recommended next step</div>
           <div class="review-section-title">No likely crash review needed</div>
           <div class="review-section-subtitle">No crashes without lat/long data were likely inside the project boundary. Continue to results to generate the refined outputs.</div>
           <div class="review-empty-actions">
-            <button class="btn primary" data-action="continue-results">Continue to results</button>
+            <button class="btn primary" data-action="continue-results" data-testid="review-empty-continue-results">Continue to results</button>
           </div>
         </section>
       `
@@ -1487,13 +1843,13 @@ function renderReviewQueue() {
 
   if (!visibleSteps.length) {
     el.reviewList.innerHTML = `
-      <section class="wizard-empty review-empty-callout">
+      <section class="wizard-empty review-empty-callout" data-testid="review-empty-state">
         <div class="review-empty-kicker">Recommended next step</div>
         <div class="review-section-title">No likely crash review needed</div>
         <div class="review-section-subtitle">No crashes without lat/long data were flagged as likely inside the project boundary. Continue to results to generate the refined outputs, or open the lower-priority candidates if you want an extra pass.</div>
         <div class="review-empty-actions">
-          <button class="btn primary" data-action="continue-results">Continue to results</button>
-          ${secondarySteps.length ? `<button class="btn secondary small" data-action="toggle-secondary">Review lower-priority candidates</button>` : ""}
+          <button class="btn primary" data-action="continue-results" data-testid="review-empty-continue-results">Continue to results</button>
+          ${secondarySteps.length ? `<button class="btn secondary small" data-action="toggle-secondary" data-testid="review-toggle-secondary">Review lower-priority candidates</button>` : ""}
         </div>
       </section>
     `;
@@ -1538,7 +1894,7 @@ function renderReviewQueue() {
     ? (state.showSecondaryReview ? "Hide Lower-Likelihood Crashes" : "Load Lower-Likelihood Crashes")
     : "";
   const currentChoiceAction = choiceState.showAction
-    ? `<button class="btn secondary small" data-action="wizard-clear-decision" data-row="${escapeHtml(current.rowKey)}">${escapeHtml(choiceState.actionLabel)}</button>`
+    ? `<button class="btn secondary small" data-action="wizard-clear-decision" data-row="${escapeHtml(current.rowKey)}" data-testid="review-clear-decision">${escapeHtml(choiceState.actionLabel)}</button>`
     : "";
   const metadataChips = metadata.length
     ? metadata.map((item) => `<span class="meta-chip">${escapeHtml(item)}</span>`).join("")
@@ -1548,6 +1904,41 @@ function renderReviewQueue() {
   const suggestionBadge = hasUsableSuggestedPoint
     ? `Suggested ${escapeHtml(`${formatCoordinate(current.suggestedLatitude)}, ${formatCoordinate(current.suggestedLongitude)}`)}`
     : "No suggestion";
+  const nearbyCrashes = getNearbyContextCrashes(current);
+  const locationSignals = [
+    current.title,
+    current.detail,
+    hasUsableSuggestedPoint
+      ? `Suggested point in project at ${formatCoordinate(current.suggestedLatitude)}, ${formatCoordinate(current.suggestedLongitude)}`
+      : "No in-boundary suggested point yet",
+  ].filter(Boolean);
+  const nearbyContextHtml = nearbyCrashes.length
+    ? `
+      <section class="review-context-panel" data-testid="review-nearby-context">
+        <div class="review-context-header">
+          <div>
+            <div class="review-context-kicker">Nearby refined crashes</div>
+            <div class="review-context-title">Use recent in-project crash placements as a reference.</div>
+          </div>
+          <div class="review-context-count">${nearbyCrashes.length} nearby</div>
+        </div>
+        <div class="review-context-list">
+          ${nearbyCrashes.map((crash) => `
+            <article class="review-context-item">
+              <div class="review-context-main">
+                <div class="review-context-item-title">${escapeHtml(crash.title || "Refined crash")}</div>
+                <div class="review-context-item-detail">${escapeHtml(crash.detail || "Refined crash inside the project boundary.")}</div>
+              </div>
+              <div class="review-context-meta">
+                <span class="meta-chip">${escapeHtml(formatDistanceFeet(crash.distanceFeet))}</span>
+                <span class="meta-chip">${escapeHtml(`${formatCoordinate(crash.latitude)}, ${formatCoordinate(crash.longitude)}`)}</span>
+              </div>
+            </article>
+          `).join("")}
+        </div>
+      </section>
+    `
+    : "";
   const extraDetails = reviewDetails.length || current.note || current.hasNarrative
     ? `
       <details class="review-more compact">
@@ -1558,9 +1949,12 @@ function renderReviewQueue() {
       </details>
     `
     : "";
+  const feedbackClass = state.reviewAdvanceFeedback
+    ? `review-feedback-${escapeHtml(state.reviewAdvanceFeedback.kind)}`
+    : "";
 
   el.reviewList.innerHTML = `
-    <section class="wizard-card ${decision ? "selected" : ""}">
+    <section class="wizard-card ${decision ? "selected" : ""} ${feedbackClass}" data-testid="review-current-card">
       <div class="wizard-progress compact">
         <div class="wizard-step-index">Crash ${state.currentReviewIndex + 1} of ${visibleSteps.length}</div>
         <div class="wizard-step-meta wizard-chip-row">${metadataChips}</div>
@@ -1579,24 +1973,30 @@ function renderReviewQueue() {
         <span class="meta-chip">${escapeHtml(suggestionBadge)}</span>
         ${draftPlacement ? `<span class="meta-chip ${draftInside ? "ready" : "warn"}">Pin ${escapeHtml(`${formatCoordinate(draftPlacement.latitude)}, ${formatCoordinate(draftPlacement.longitude)}`)}</span>` : ""}
       </div>
+      <div class="review-location-banner" data-testid="review-location-banner">
+        ${locationSignals.map((line, index) => `
+          <div class="${index === 0 ? "review-location-title" : "review-location-line"}">${escapeHtml(line)}</div>
+        `).join("")}
+      </div>
       <div class="review-relevance compact">
         <div class="review-relevance-summary">${escapeHtml(reviewNote)}</div>
         <div class="review-note">${escapeHtml(detailSummary)}</div>
         ${extraDetails}
       </div>
+      ${nearbyContextHtml}
       <div class="wizard-actions compact">
-        <button class="btn secondary small" data-action="wizard-accept-suggested" data-row="${escapeHtml(current.rowKey)}"${canAcceptSuggested ? "" : " disabled"}>Use suggested</button>
-        <button class="btn secondary small" data-action="wizard-pick-map" data-row="${escapeHtml(current.rowKey)}">${state.reviewMapPickMode ? "Picking on map" : "Place on map"}</button>
-        <button class="btn secondary small" data-action="wizard-confirm-manual" data-row="${escapeHtml(current.rowKey)}"${draftPlacement && draftInside ? "" : " disabled"}>Confirm pin</button>
-        <button class="btn danger small" data-action="wizard-exclude" data-row="${escapeHtml(current.rowKey)}">Exclude</button>
+        <button class="btn secondary small" data-action="wizard-accept-suggested" data-row="${escapeHtml(current.rowKey)}" data-testid="review-use-suggested"${canAcceptSuggested ? "" : " disabled"}>Use suggested</button>
+        <button class="btn secondary small" data-action="wizard-pick-map" data-row="${escapeHtml(current.rowKey)}" data-testid="review-place-on-map">${state.reviewMapPickMode ? "Picking on map" : "Place on map"}</button>
+        <button class="btn secondary small" data-action="wizard-confirm-manual" data-row="${escapeHtml(current.rowKey)}" data-testid="review-confirm-pin"${draftPlacement && draftInside ? "" : " disabled"}>Confirm pin</button>
+        <button class="btn danger small" data-action="wizard-exclude" data-row="${escapeHtml(current.rowKey)}" data-testid="review-exclude">Exclude</button>
         ${currentChoiceAction}
       </div>
       <div class="wizard-nav">
-        <button class="btn secondary small" data-action="wizard-prev"${state.currentReviewIndex > 0 ? "" : " disabled"}>Previous</button>
-        <button class="btn secondary small" data-action="wizard-next"${state.currentReviewIndex < visibleSteps.length - 1 ? "" : " disabled"}>Next</button>
+        <button class="btn secondary small" data-action="wizard-prev" data-testid="review-prev"${state.currentReviewIndex > 0 ? "" : " disabled"}>Previous</button>
+        <button class="btn secondary small" data-action="wizard-next" data-testid="review-next"${state.currentReviewIndex < visibleSteps.length - 1 ? "" : " disabled"}>Next</button>
         ${
           navigationSecondaryLabel
-            ? `<button class="btn secondary small" data-action="toggle-secondary">${escapeHtml(navigationSecondaryLabel)}</button>`
+            ? `<button class="btn secondary small" data-action="toggle-secondary" data-testid="review-toggle-secondary">${escapeHtml(navigationSecondaryLabel)}</button>`
             : ""
         }
       </div>
@@ -1625,8 +2025,44 @@ async function fetchReviewQueue(runId) {
     renderReviewQueue();
     return;
   }
-  const response = await fetch(`/api/run/${runId}/review-wizard`);
-  if (!response.ok) {
+  try {
+    const response = await fetch(`/api/run/${runId}/review-wizard`);
+    if (!response.ok) {
+      state.reviewQueue = [];
+      state.reviewSecondaryQueue = [];
+      state.reviewMapData = null;
+      state.reviewDecisions = {};
+      state.reviewDraftPlacements = {};
+      state.showSecondaryReview = false;
+      state.currentReviewIndex = 0;
+      state.reviewMapPickMode = false;
+      state.reviewMapFocusKey = null;
+      state.reviewExcludeConfirmRow = null;
+      setReviewWorkbenchTab("map");
+      renderReviewQueue();
+      return;
+    }
+    const data = await parseJsonSafe(response);
+    state.reviewQueue = data.primarySteps || [];
+    state.reviewSecondaryQueue = data.secondarySteps || [];
+    state.reviewMapData = data.mapData || null;
+    const validKeys = new Set(
+      [...state.reviewQueue, ...state.reviewSecondaryQueue].map((step) => step.rowKey)
+    );
+    state.reviewDecisions = Object.fromEntries(
+      Object.entries(state.reviewDecisions).filter(([key]) => validKeys.has(key))
+    );
+    state.reviewDraftPlacements = Object.fromEntries(
+      Object.entries(state.reviewDraftPlacements).filter(([key]) => validKeys.has(key))
+    );
+    state.currentReviewIndex = 0;
+    state.showSecondaryReview = false;
+    state.reviewMapPickMode = false;
+    state.reviewMapFocusKey = null;
+    state.reviewExcludeConfirmRow = null;
+    setReviewWorkbenchTab("map");
+    renderReviewQueue();
+  } catch (_error) {
     state.reviewQueue = [];
     state.reviewSecondaryQueue = [];
     state.reviewMapData = null;
@@ -1639,28 +2075,14 @@ async function fetchReviewQueue(runId) {
     state.reviewExcludeConfirmRow = null;
     setReviewWorkbenchTab("map");
     renderReviewQueue();
-    return;
   }
-  const data = await response.json().catch(() => ({}));
-  state.reviewQueue = data.primarySteps || [];
-  state.reviewSecondaryQueue = data.secondarySteps || [];
-  state.reviewMapData = data.mapData || null;
-  const validKeys = new Set(
-    [...state.reviewQueue, ...state.reviewSecondaryQueue].map((step) => step.rowKey)
-  );
-  state.reviewDecisions = Object.fromEntries(
-    Object.entries(state.reviewDecisions).filter(([key]) => validKeys.has(key))
-  );
-  state.reviewDraftPlacements = Object.fromEntries(
-    Object.entries(state.reviewDraftPlacements).filter(([key]) => validKeys.has(key))
-  );
-  state.currentReviewIndex = 0;
-  state.showSecondaryReview = false;
-  state.reviewMapPickMode = false;
-  state.reviewMapFocusKey = null;
-  state.reviewExcludeConfirmRow = null;
-  setReviewWorkbenchTab("map");
-  renderReviewQueue();
+}
+
+function slugify(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9]+/g, "-")
+    .replaceAll(/^-+|-+$/g, "") || "item";
 }
 
 function escapeHtml(value) {
@@ -1694,16 +2116,21 @@ function confirmSuggestedPlacement(rowKey) {
     note: "Confirmed suggested placement in browser review workbench.",
   };
   moveToNextReviewStep(true);
+  setReviewAdvanceFeedback("placed");
+  showToast("Suggested crash placement saved. Loading the next crash.");
   renderReviewQueue();
 }
 
 function beginMapPlacement(rowKey) {
   const current = getCurrentReviewStep();
+  const isCurrentStep = current && current.rowKey === rowKey;
   const togglingCurrentStep = current && current.rowKey === rowKey && state.reviewMapPickMode;
   focusReviewStep(rowKey);
   clearPendingExclusion();
   state.reviewMapPickMode = !togglingCurrentStep;
-  state.reviewMapFocusKey = null;
+  if (!isCurrentStep) {
+    state.reviewMapFocusKey = null;
+  }
   if (state.reviewMapPickMode && isReviewWorkbenchTabbed()) {
     setReviewWorkbenchTab("map");
   }
@@ -1738,6 +2165,8 @@ function confirmManualPlacement(rowKey) {
   };
   delete state.reviewDraftPlacements[rowKey];
   moveToNextReviewStep(true);
+  setReviewAdvanceFeedback("placed");
+  showToast("Manual crash placement saved. Loading the next crash.");
   renderReviewQueue();
 }
 
@@ -1756,6 +2185,8 @@ function rejectReviewCrash(rowKey) {
     note: "Excluded from project in browser review workbench.",
   };
   moveToNextReviewStep(true);
+  setReviewAdvanceFeedback("excluded");
+  showToast("Crash excluded from the project. Loading the next crash.");
   renderReviewQueue();
 }
 
@@ -1787,6 +2218,7 @@ function clearCurrentMapPlacement() {
 async function startRun() {
   if (!state.dataFile || !state.kmzFile) return;
   clearLogs();
+  clearPollingTimer();
   state.runInputs = {
     dataFile: state.dataFile.name,
     kmzFile: state.kmzFile.name,
@@ -1811,29 +2243,38 @@ async function startRun() {
   setProgressRunning(true);
   setReportProgressRunning(false);
   updateConeTracker("running");
-  el.runRefine.disabled = true;
-  el.generateReport.disabled = true;
-  el.applyReview.disabled = true;
+  setUiBusy(true);
   el.snapshotTag.textContent = "Running";
   el.snapshotStatus.textContent = "Processing crash data.";
   el.outputLinks.textContent = "Run in progress...";
 
-  const response = await fetch("/api/run", {
-    method: "POST",
-    body: buildRunFormData(),
-  });
-  const data = await response.json();
-  if (!response.ok) {
-    showToast(data.error || "Unable to start refinement.");
-    setStatus("error", "Run failed to start", "Check inputs and try again.");
-    setProgressRunning(false);
-    updateRunButton();
-    return;
+  try {
+    const response = await fetch("/api/run", {
+      method: "POST",
+      body: buildRunFormData(),
+    });
+    const data = await parseJsonSafe(response);
+    if (!response.ok) {
+      showToast(data.error || "Unable to start refinement.");
+      setStatus("error", "Run failed to start", "Check inputs and try again.");
+      setProgressRunning(false);
+      unlockUiAfterRun();
+      return;
+    }
+    state.runId = data.runId;
+    state.logSeq = 0;
+    saveUiSession();
+    await pollLogs();
+    if (!state.pollTimer && el.statusBar.dataset.state === "running") {
+      state.pollTimer = window.setInterval(pollLogs, 1200);
+    }
+  } catch (_error) {
+    handleRunConnectionFailure(
+      "Run failed to start",
+      "Unable to reach the refinement service.",
+      "Unable to start refinement."
+    );
   }
-  state.runId = data.runId;
-  state.logSeq = 0;
-  pollLogs();
-  state.pollTimer = window.setInterval(pollLogs, 1200);
 }
 
 async function startReport() {
@@ -1842,36 +2283,45 @@ async function startReport() {
     return;
   }
   clearLogs();
+  clearPollingTimer();
   setUiStage("results", { persist: false });
   setStatus("running", "Report running", "Generating PDF crash report.");
   setProgressRunning(true);
   setReportProgressRunning(true);
   updateConeTracker("running");
-  el.runRefine.disabled = true;
-  el.generateReport.disabled = true;
-  el.applyReview.disabled = true;
+  setUiBusy(true);
   el.snapshotTag.textContent = "Running";
   el.snapshotStatus.textContent = "Generating PDF report.";
   el.outputLinks.textContent = "Report in progress...";
-  setMapPreview(null);
 
-  const response = await fetch("/api/report", {
-    method: "POST",
-    body: buildReportFormData(),
-  });
-  const data = await response.json();
-  if (!response.ok) {
-    showToast(data.error || "Unable to start report.");
-    setStatus("error", "Report failed to start", "Check inputs and try again.");
-    setProgressRunning(false);
-    setReportProgressRunning(false);
-    updateRunButton();
-    return;
+  try {
+    const response = await fetch("/api/report", {
+      method: "POST",
+      body: buildReportFormData(),
+    });
+    const data = await parseJsonSafe(response);
+    if (!response.ok) {
+      showToast(data.error || "Unable to start report.");
+      setStatus("error", "Report failed to start", "Check inputs and try again.");
+      setProgressRunning(false);
+      setReportProgressRunning(false);
+      unlockUiAfterRun();
+      return;
+    }
+    state.runId = data.runId;
+    state.logSeq = 0;
+    saveUiSession();
+    await pollLogs();
+    if (!state.pollTimer && el.statusBar.dataset.state === "running") {
+      state.pollTimer = window.setInterval(pollLogs, 1200);
+    }
+  } catch (_error) {
+    handleRunConnectionFailure(
+      "Report failed to start",
+      "Unable to reach the report service.",
+      "Unable to start report."
+    );
   }
-  state.runId = data.runId;
-  state.logSeq = 0;
-  pollLogs();
-  state.pollTimer = window.setInterval(pollLogs, 1200);
 }
 
 async function startApplyReview() {
@@ -1880,50 +2330,60 @@ async function startApplyReview() {
     return;
   }
   clearLogs();
+  clearPollingTimer();
   setUiStage("results", { persist: false });
   setStatus("running", "Applying review decisions", "Re-running refinement with approved coordinates.");
   setProgressRunning(true);
   setReportProgressRunning(false);
   updateConeTracker("running");
-  el.runRefine.disabled = true;
-  el.generateReport.disabled = true;
-  el.applyReview.disabled = true;
+  setUiBusy(true);
   el.snapshotTag.textContent = "Running";
   el.snapshotStatus.textContent = "Applying approved coordinate decisions.";
   el.outputLinks.textContent = "Run in progress...";
 
-  const response = await fetch("/api/apply-review", {
-    method: "POST",
-    body: buildReviewFormData(),
-  });
-  const data = await response.json();
-  if (!response.ok) {
-    showToast(data.error || "Unable to apply coordinate decisions.");
-    setStatus("error", "Review apply failed", "Check the reviewed workbook and try again.");
-    setProgressRunning(false);
-    updateRunButton();
-    return;
+  try {
+    const response = await fetch("/api/apply-review", {
+      method: "POST",
+      body: buildReviewFormData(),
+    });
+    const data = await parseJsonSafe(response);
+    if (!response.ok) {
+      showToast(data.error || "Unable to apply coordinate decisions.");
+      setStatus("error", "Review apply failed", "Check the reviewed workbook and try again.");
+      setProgressRunning(false);
+      unlockUiAfterRun();
+      return;
+    }
+    state.reviewFile = null;
+    state.reviewQueue = [];
+    state.reviewSecondaryQueue = [];
+    state.reviewDecisions = {};
+    state.reviewDraftPlacements = {};
+    state.currentReviewIndex = 0;
+    state.showSecondaryReview = false;
+    state.reviewMapData = null;
+    state.reviewMapPickMode = false;
+    state.reviewMapFocusKey = null;
+    state.reviewExcludeConfirmRow = null;
+    setReviewWorkbenchTab("map");
+    renderReviewQueue();
+    el.reviewInput.value = "";
+    el.reviewLabel.textContent = "Reviewed coordinate workbook";
+    el.reviewHint.textContent = "Upload a reviewed workbook";
+    state.runId = data.runId;
+    state.logSeq = 0;
+    saveUiSession();
+    await pollLogs();
+    if (!state.pollTimer && el.statusBar.dataset.state === "running") {
+      state.pollTimer = window.setInterval(pollLogs, 1200);
+    }
+  } catch (_error) {
+    handleRunConnectionFailure(
+      "Review apply failed",
+      "Unable to reach the review service.",
+      "Unable to apply coordinate decisions."
+    );
   }
-  state.reviewFile = null;
-  state.reviewQueue = [];
-  state.reviewSecondaryQueue = [];
-  state.reviewDecisions = {};
-  state.reviewDraftPlacements = {};
-  state.currentReviewIndex = 0;
-  state.showSecondaryReview = false;
-  state.reviewMapData = null;
-  state.reviewMapPickMode = false;
-  state.reviewMapFocusKey = null;
-  state.reviewExcludeConfirmRow = null;
-  setReviewWorkbenchTab("map");
-  renderReviewQueue();
-  el.reviewInput.value = "";
-  el.reviewLabel.textContent = "Reviewed coordinate workbook";
-  el.reviewHint.textContent = "Upload a reviewed workbook";
-  state.runId = data.runId;
-  state.logSeq = 0;
-  pollLogs();
-  state.pollTimer = window.setInterval(pollLogs, 1200);
 }
 
 async function startApplyBrowserReview() {
@@ -1932,47 +2392,56 @@ async function startApplyBrowserReview() {
     return;
   }
   clearLogs();
+  clearPollingTimer();
   setUiStage("results", { persist: false });
   setStatus("running", "Applying browser review", "Re-running refinement with reviewed crash placements.");
   setProgressRunning(true);
   setReportProgressRunning(false);
   updateConeTracker("running");
-  el.runRefine.disabled = true;
-  el.generateReport.disabled = true;
-  el.applyReview.disabled = true;
-  el.applyBrowserReview.disabled = true;
+  setUiBusy(true);
   el.snapshotTag.textContent = "Running";
   el.snapshotStatus.textContent = "Applying selected crash review decisions.";
   el.outputLinks.textContent = "Run in progress...";
 
-  const response = await fetch("/api/apply-review", {
-    method: "POST",
-    body: buildBrowserReviewFormData(),
-  });
-  const data = await response.json();
-  if (!response.ok) {
-    showToast(data.error || "Unable to apply browser review decisions.");
-    setStatus("error", "Browser review failed", "Check the selected decisions and try again.");
-    setProgressRunning(false);
-    updateRunButton();
-    return;
+  try {
+    const response = await fetch("/api/apply-review", {
+      method: "POST",
+      body: buildBrowserReviewFormData(),
+    });
+    const data = await parseJsonSafe(response);
+    if (!response.ok) {
+      showToast(data.error || "Unable to apply browser review decisions.");
+      setStatus("error", "Browser review failed", "Check the selected decisions and try again.");
+      setProgressRunning(false);
+      unlockUiAfterRun();
+      return;
+    }
+    state.reviewQueue = [];
+    state.reviewSecondaryQueue = [];
+    state.reviewDecisions = {};
+    state.reviewDraftPlacements = {};
+    state.currentReviewIndex = 0;
+    state.showSecondaryReview = false;
+    state.reviewMapData = null;
+    state.reviewMapPickMode = false;
+    state.reviewMapFocusKey = null;
+    state.reviewExcludeConfirmRow = null;
+    setReviewWorkbenchTab("map");
+    renderReviewQueue();
+    state.runId = data.runId;
+    state.logSeq = 0;
+    saveUiSession();
+    await pollLogs();
+    if (!state.pollTimer && el.statusBar.dataset.state === "running") {
+      state.pollTimer = window.setInterval(pollLogs, 1200);
+    }
+  } catch (_error) {
+    handleRunConnectionFailure(
+      "Browser review failed",
+      "Unable to reach the review service.",
+      "Unable to apply browser review decisions."
+    );
   }
-  state.reviewQueue = [];
-  state.reviewSecondaryQueue = [];
-  state.reviewDecisions = {};
-  state.reviewDraftPlacements = {};
-  state.currentReviewIndex = 0;
-  state.showSecondaryReview = false;
-  state.reviewMapData = null;
-  state.reviewMapPickMode = false;
-  state.reviewMapFocusKey = null;
-  state.reviewExcludeConfirmRow = null;
-  setReviewWorkbenchTab("map");
-  renderReviewQueue();
-  state.runId = data.runId;
-  state.logSeq = 0;
-  pollLogs();
-  state.pollTimer = window.setInterval(pollLogs, 1200);
 }
 
 async function startRelabel() {
@@ -1981,37 +2450,40 @@ async function startRelabel() {
     return;
   }
   clearLogs();
+  clearPollingTimer();
   setUiStage("results", { persist: false });
   setStatus("running", "Regenerating labels", "Updating the refined spreadsheet and KMZ numbering.");
   setProgressRunning(true);
   setReportProgressRunning(false);
   updateConeTracker("running");
-  el.runRefine.disabled = true;
-  el.generateReport.disabled = true;
-  el.applyReview.disabled = true;
-  el.applyBrowserReview.disabled = true;
-  if (el.resultsRelabel) {
-    el.resultsRelabel.disabled = true;
-  }
+  setUiBusy(true);
   el.snapshotTag.textContent = "Running";
   el.snapshotStatus.textContent = "Regenerating KMZ labels.";
   el.outputLinks.textContent = "Relabel in progress...";
 
-  const response = await fetch(`/api/run/${state.runId}/relabel`, {
-    method: "POST",
-    body: buildRelabelFormData(),
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    showToast(data.error || "Unable to regenerate labels.");
-    setStatus("error", "Label regeneration failed", "Check the requested direction and try again.");
-    setProgressRunning(false);
-    updateRunButton();
-    return;
-  }
-  pollLogs();
-  if (!state.pollTimer) {
-    state.pollTimer = window.setInterval(pollLogs, 1200);
+  try {
+    const response = await fetch(`/api/run/${state.runId}/relabel`, {
+      method: "POST",
+      body: buildRelabelFormData(),
+    });
+    const data = await parseJsonSafe(response);
+    if (!response.ok) {
+      showToast(data.error || "Unable to regenerate labels.");
+      setStatus("error", "Label regeneration failed", "Check the requested direction and try again.");
+      setProgressRunning(false);
+      unlockUiAfterRun();
+      return;
+    }
+    await pollLogs();
+    if (!state.pollTimer && el.statusBar.dataset.state === "running") {
+      state.pollTimer = window.setInterval(pollLogs, 1200);
+    }
+  } catch (_error) {
+    handleRunConnectionFailure(
+      "Label regeneration failed",
+      "Unable to reach the relabel service.",
+      "Unable to regenerate labels."
+    );
   }
 }
 
@@ -2024,8 +2496,6 @@ const CONE_MILESTONES = [
   { id: "output", label: "Output", progress: 90 },
 ];
 
-const CONE_CALC_VALUES = ["Σ", "N=?", "✓18", "?7", "→KMZ", "Σ"];
-
 function getConeRuntimeSignals() {
   const texts = state.logLines.slice(-50);
   const combined = texts.join(" ").toLowerCase();
@@ -2037,6 +2507,9 @@ function getConeRuntimeSignals() {
     hasLabels: combined.includes("kmz labels ordered"),
     hasRefined: combined.includes("refined output saved"),
     hasKmz: combined.includes("kmz report generated"),
+    hasPdf: combined.includes(".pdf") || combined.includes("report generated"),
+    hasReviewApply: combined.includes("review decisions"),
+    hasRelabel: combined.includes("relabel") || combined.includes("labels regenerated"),
     hasValidated: combined.includes("output invariants validated"),
     combined,
   };
@@ -2078,17 +2551,59 @@ function getConeProgress(phase, milestoneId) {
 }
 
 function getConeNote(phase, milestoneId) {
-  if (phase === "success") return "Lane clear.";
-  if (phase === "error") return "Check run log.";
-  if (phase === "idle") return "Waiting for run.";
-  if (milestoneId === "load") return "Reading crash data.";
-  if (milestoneId === "normalize") return "Recovering coordinates.";
-  if (milestoneId === "filter") return "Filtering by boundary.";
-  if (milestoneId === "output") return "Writing outputs.";
+  const sig = getConeRuntimeSignals();
+  if (phase === "success") {
+    if (sig.hasPdf) return "Report stamped and ready.";
+    if (sig.hasRelabel) return "Fresh KMZ labels are ready.";
+    if (sig.hasReviewApply) return "Approved placements folded into outputs.";
+    return "Lane clear. Outputs are ready.";
+  }
+  if (phase === "error") return "Work zone blocked. Check the run log.";
+  if (phase === "idle") return "Waiting for a new assignment.";
+  if (milestoneId === "load") return sig.hasBoundary ? "Boundary loaded. Reading crash rows." : "Loading crash data and project boundary.";
+  if (milestoneId === "normalize") return "Checking headers and recovering likely coordinates.";
+  if (milestoneId === "filter") return "Comparing crash patterns against the project boundary.";
+  if (milestoneId === "output") return sig.hasPdf ? "Formatting the report deliverable." : "Writing the workbook, KMZ, and review artifacts.";
   return "Processing.";
 }
 
-function setConeMotion(root, nextProgress, phase, milestoneId) {
+function getConeCalcValues(milestoneId, phase) {
+  const sig = getConeRuntimeSignals();
+  if (phase === "success") {
+    if (sig.hasPdf) return ["PDF", "STAMP", "READY"];
+    if (sig.hasRelabel) return ["KMZ", "ORDER", "DONE"];
+    return ["DONE", "CLEAR", "READY"];
+  }
+  if (phase === "error") return ["ERR", "LOG", "FIX"];
+  if (phase === "idle") return ["IDLE"];
+  if (milestoneId === "load") return ["CSV", "KMZ", "HDR", "SCAN"];
+  if (milestoneId === "normalize") return ["LAT", "LON", "GPS?", "MATCH"];
+  if (milestoneId === "filter") return ["IN?", "KMZ", "ROUTE", "KEEP", "CUT"];
+  if (sig.hasPdf) return ["PDF", "PAGE", "PACK", "SHIP"];
+  if (sig.hasRelabel) return ["KMZ", "ORDER", "WEST", "DONE"];
+  return ["XLSX", "KMZ", "ZIP", "DONE"];
+}
+
+function setConeMotion(root, nextProgress, phase, milestoneId, { instant = false } = {}) {
+  if (instant) {
+    if (state.coneGuy.driveTimer) {
+      window.clearTimeout(state.coneGuy.driveTimer);
+      state.coneGuy.driveTimer = null;
+    }
+    if (state.coneGuy.settleTimer) {
+      window.clearTimeout(state.coneGuy.settleTimer);
+      state.coneGuy.settleTimer = null;
+    }
+    root.classList.add("is-restoring");
+    root.classList.remove("is-driving", "is-settling");
+    state.coneGuy.progress = nextProgress;
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        root.classList.remove("is-restoring");
+      });
+    });
+    return;
+  }
   if (state.coneGuy.progress === nextProgress) return;
   const wasBeforeFinish = state.coneGuy.progress < 90;
   state.coneGuy.progress = nextProgress;
@@ -2109,7 +2624,7 @@ function setConeMotion(root, nextProgress, phase, milestoneId) {
   }, 3000);
 }
 
-function updateConeTracker(phase) {
+function updateConeTracker(phase, { instant = false, restored = false } = {}) {
   if (!el.coneTracker) return;
   if (!phase) {
     phase = state.pollTimer ? "running" : "idle";
@@ -2120,13 +2635,16 @@ function updateConeTracker(phase) {
   const root = el.coneTracker;
 
   root.classList.remove(
-    "is-idle", "is-running", "is-success", "is-error",
+    "is-idle", "is-running", "is-success", "is-error", "is-restored-complete",
     "phase-load", "phase-normalize", "phase-filter", "phase-output"
   );
   root.classList.add(`is-${phase}`);
+  if (restored && phase === "success") {
+    root.classList.add("is-restored-complete");
+  }
   root.classList.add(`phase-${milestoneId}`);
   root.style.setProperty("--cone-progress", `${progress}%`);
-  setConeMotion(root, progress, phase, milestoneId);
+  setConeMotion(root, progress, phase, milestoneId, { instant });
 
   if (el.coneTrackerState) {
     el.coneTrackerState.textContent =
@@ -2157,7 +2675,7 @@ function updateConeTracker(phase) {
     }
   });
   state.coneGuy.milestone = milestoneId;
-  syncConeCalcTimer(milestoneId);
+  syncConeCalcTimer(milestoneId, phase);
 }
 
 function setConeCalcScreen(text) {
@@ -2168,143 +2686,181 @@ function setConeCalcScreen(text) {
   el.coneTrackerCalcScreen.style.transformOrigin = "right center";
 }
 
-function syncConeCalcTimer(milestoneId) {
-  if (milestoneId === "filter" && !state.coneGuy.calcCycleTimer) {
-    let idx = 0;
-    state.coneGuy.calcCycleTimer = setInterval(() => {
-      idx = (idx + 1) % CONE_CALC_VALUES.length;
-      setConeCalcScreen(CONE_CALC_VALUES[idx]);
-    }, 900);
-  } else if (milestoneId !== "filter" && state.coneGuy.calcCycleTimer) {
+function syncConeCalcTimer(milestoneId, phase) {
+  const values = getConeCalcValues(milestoneId, phase);
+  const signature = `${phase}:${milestoneId}:${values.join("|")}`;
+  if (state.coneGuy.calcSignature === signature) {
+    return;
+  }
+  state.coneGuy.calcSignature = signature;
+  if (state.coneGuy.calcCycleTimer) {
     clearInterval(state.coneGuy.calcCycleTimer);
     state.coneGuy.calcCycleTimer = null;
-    setConeCalcScreen("Σ");
   }
+  setConeCalcScreen(values[0] || "Σ");
+  if (phase !== "running" || values.length <= 1) {
+    return;
+  }
+  let idx = 0;
+  const intervalMs = milestoneId === "filter" ? 820 : (milestoneId === "output" ? 980 : 1150);
+  state.coneGuy.calcCycleTimer = setInterval(() => {
+    idx = (idx + 1) % values.length;
+    setConeCalcScreen(values[idx]);
+  }, intervalMs);
 }
 
 async function pollLogs() {
   if (!state.runId) return;
-  const response = await fetch(`/api/run/${state.runId}/log?since=${state.logSeq}`);
-  if (!response.ok) return;
-  const data = await response.json();
-  state.logSeq = data.lastSeq || state.logSeq;
-  appendLog(data.entries || []);
-  if (data.status === "running" && data.message) {
-    el.statusDetail.textContent = data.message;
-    el.snapshotStatus.textContent = data.message;
-  }
-  if (data.status === "running") {
-    updateConeTracker("running");
-  }
-  if (data.status && data.status !== "running") {
-    window.clearInterval(state.pollTimer);
-    state.pollTimer = null;
-    await finalizeRun(data.status);
+  try {
+    const response = await fetch(`/api/run/${state.runId}/log?since=${state.logSeq}`);
+    if (!response.ok) {
+      if (response.status === 404) {
+        handleRunConnectionFailure(
+          "Run unavailable",
+          "The saved run could not be found.",
+          "Run session is no longer available.",
+          { clearSession: true }
+        );
+      }
+      return;
+    }
+    const data = await parseJsonSafe(response);
+    state.logSeq = data.lastSeq || state.logSeq;
+    appendLog(data.entries || []);
+    if (data.status === "running" && data.message) {
+      el.statusDetail.textContent = data.message;
+      el.snapshotStatus.textContent = data.message;
+    }
+    if (data.status === "running") {
+      updateConeTracker("running");
+    }
+    if (data.status && data.status !== "running") {
+      clearPollingTimer();
+      await finalizeRun(data.status);
+    }
+  } catch (_error) {
+    handleRunConnectionFailure(
+      "Run connection lost",
+      "Lost connection while streaming run activity.",
+      "Lost connection to the running job."
+    );
   }
 }
 
 async function finalizeRun(status) {
-  const response = await fetch(`/api/run/${state.runId}`);
-  if (!response.ok) {
-    setStatus("error", "Run failed", "Unable to retrieve run status.");
+  try {
+    const response = await fetch(`/api/run/${state.runId}`);
+    if (!response.ok) {
+      handleRunConnectionFailure(
+        "Run failed",
+        "Unable to retrieve final run status.",
+        "Unable to load the finished run."
+      );
+      state.reviewQueue = [];
+      renderReviewQueue();
+      return;
+    }
+    const data = await parseJsonSafe(response);
+    state.runInputs = data.inputs || state.runInputs;
+    state.lastRunSummary = data.summary || null;
+    state.lastOutputs = data.outputs || [];
+    setLabelOrderSelection((state.runInputs && state.runInputs.labelOrder) || "auto", { scope: "results" });
+    const runKind = (data.inputs && data.inputs.runKind) || "refine";
+    const usedReviewWorkbook = !!(
+      data.inputs && (data.inputs.coordinateReviewFile || data.inputs.browserReviewDecisionCount)
+    );
+    if (status === "success") {
+      const successTitle = runKind === "report"
+        ? "Report complete"
+        : (runKind === "relabel"
+          ? "Labels regenerated"
+          : (usedReviewWorkbook ? "Review decisions applied" : "Refinement complete"));
+      const successSnapshot = runKind === "report"
+        ? "PDF report completed successfully."
+        : (runKind === "relabel"
+          ? "Refined output and KMZ labels were updated."
+          : (usedReviewWorkbook
+            ? "Refinement reran with approved coordinates."
+            : "Refinement completed successfully."));
+      setStatus(
+        "success",
+        successTitle,
+        data.message || "Outputs ready."
+      );
+      el.snapshotTag.textContent = "Complete";
+      el.snapshotStatus.textContent = successSnapshot;
+    } else {
+      const errorTitle = runKind === "report"
+        ? "Report failed"
+        : (runKind === "relabel"
+          ? "Label regeneration failed"
+          : (usedReviewWorkbook ? "Review apply failed" : "Refinement failed"));
+      const errorSnapshot = runKind === "report"
+        ? "PDF report encountered errors."
+        : (runKind === "relabel"
+          ? "Relabeling encountered errors."
+          : (usedReviewWorkbook
+            ? "Approved coordinate rerun encountered errors."
+            : "Refinement encountered errors."));
+      const errorToast = runKind === "report"
+        ? "PDF report failed."
+        : (runKind === "relabel"
+          ? "Regenerating labels failed."
+          : (usedReviewWorkbook ? "Applying review decisions failed." : "Refinement failed."));
+      setStatus(
+        "error",
+        errorTitle,
+        data.message || "Review the run log."
+      );
+      el.snapshotTag.textContent = "Failed";
+      el.snapshotStatus.textContent = errorSnapshot;
+      showToast(data.error || errorToast);
+    }
+
+    renderOutputs(data.outputs || []);
+    renderMetrics(data.summary || {});
+    if (data.summary && data.summary.mapReport) {
+      setMapPreview(data.summary.mapReport);
+    } else if (state.previewMapUrl) {
+      setMapPreview(null, state.previewMapUrl);
+    } else {
+      setMapPreview(null, null, { clearStoredPreview: true });
+    }
+    if (status === "success") {
+      await fetchReviewQueue(state.runId);
+    } else {
+      renderReviewQueue();
+    }
+
+    if (status === "success") {
+      if (runKind === "refine" && !usedReviewWorkbook && reviewPendingCount()) {
+        setUiStage("review", { persist: false });
+      } else {
+        setUiStage("results", { persist: false });
+      }
+    }
+
+    const finishedAt = data.finishedAt;
+    if (finishedAt) {
+      el.snapshotLastRun.textContent = `${describeCompletedAction(runKind, usedReviewWorkbook)} at ${new Date(finishedAt).toLocaleString()}`;
+    }
     setProgressRunning(false);
-    updateConeTracker("error");
+    setReportProgressRunning(false);
+    updateConeTracker(status === "success" ? "success" : "error");
+    unlockUiAfterRun();
+    updateResultsSummary();
+    updateLabelOrderControls();
+    renderStageChrome();
+    saveUiSession();
+  } catch (_error) {
+    handleRunConnectionFailure(
+      "Run failed",
+      "Unable to load the finished run state.",
+      "Unable to load the finished run."
+    );
     state.reviewQueue = [];
     renderReviewQueue();
-    updateRunButton();
-    return;
   }
-  const data = await response.json();
-  state.runInputs = data.inputs || state.runInputs;
-  state.lastRunSummary = data.summary || null;
-  state.lastOutputs = data.outputs || [];
-  setLabelOrderSelection((state.runInputs && state.runInputs.labelOrder) || "auto", { scope: "results" });
-  const runKind = (data.inputs && data.inputs.runKind) || "refine";
-  const usedReviewWorkbook = !!(
-    data.inputs && (data.inputs.coordinateReviewFile || data.inputs.browserReviewDecisionCount)
-  );
-  if (status === "success") {
-    const successTitle = runKind === "report"
-      ? "Report complete"
-      : (runKind === "relabel"
-        ? "Labels regenerated"
-        : (usedReviewWorkbook ? "Review decisions applied" : "Refinement complete"));
-    const successSnapshot = runKind === "report"
-      ? "PDF report completed successfully."
-      : (runKind === "relabel"
-        ? "Refined output and KMZ labels were updated."
-        : (usedReviewWorkbook
-          ? "Refinement reran with approved coordinates."
-          : "Refinement completed successfully."));
-    setStatus(
-      "success",
-      successTitle,
-      data.message || "Outputs ready."
-    );
-    el.snapshotTag.textContent = "Complete";
-    el.snapshotStatus.textContent = successSnapshot;
-  } else {
-    const errorTitle = runKind === "report"
-      ? "Report failed"
-      : (runKind === "relabel"
-        ? "Label regeneration failed"
-        : (usedReviewWorkbook ? "Review apply failed" : "Refinement failed"));
-    const errorSnapshot = runKind === "report"
-      ? "PDF report encountered errors."
-      : (runKind === "relabel"
-        ? "Relabeling encountered errors."
-        : (usedReviewWorkbook
-          ? "Approved coordinate rerun encountered errors."
-          : "Refinement encountered errors."));
-    const errorToast = runKind === "report"
-      ? "PDF report failed."
-      : (runKind === "relabel"
-        ? "Regenerating labels failed."
-        : (usedReviewWorkbook ? "Applying review decisions failed." : "Refinement failed."));
-    setStatus(
-      "error",
-      errorTitle,
-      data.message || "Review the run log."
-    );
-    el.snapshotTag.textContent = "Failed";
-    el.snapshotStatus.textContent = errorSnapshot;
-    showToast(data.error || errorToast);
-  }
-
-  renderOutputs(data.outputs || []);
-  renderMetrics(data.summary || {});
-  if (data.summary && data.summary.mapReport) {
-    setMapPreview(data.summary.mapReport);
-  } else {
-    setMapPreview(null);
-  }
-  if (status === "success") {
-    await fetchReviewQueue(state.runId);
-  } else {
-    renderReviewQueue();
-  }
-
-  if (status === "success") {
-    if (runKind === "refine" && !usedReviewWorkbook && reviewPendingCount()) {
-      setUiStage("review", { persist: false });
-    } else {
-      setUiStage("results", { persist: false });
-    }
-  }
-
-  const finishedAt = data.finishedAt;
-  if (finishedAt) {
-    el.snapshotLastRun.textContent = `Completed ${new Date(finishedAt).toLocaleString()}`;
-  }
-  setProgressRunning(false);
-  setReportProgressRunning(false);
-  updateConeTracker(status === "success" ? "success" : "error");
-  updateRunButton();
-  updateStageAvailability();
-  updateResultsSummary();
-  updateLabelOrderControls();
-  renderStageChrome();
-  saveUiSession();
 }
 
 function syncLogWindow() {
@@ -2327,7 +2883,7 @@ function openLogWindow() {
       <head>
         <title>Run Log</title>
         <style>
-          body { margin: 0; background: #010201; color: #00ff41; font-family: "Courier New", monospace; }
+          body { margin: 0; background: #0f172a; color: #e2e8f0; font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif; }
           pre { margin: 0; padding: 18px; white-space: pre-wrap; }
         </style>
       </head>
@@ -2362,19 +2918,26 @@ async function restoreUiSession() {
       return;
     }
 
-    const data = await response.json();
+    const data = await parseJsonSafe(response);
     state.runId = saved.runId;
     state.runInputs = data.inputs || saved.runInputs || null;
     state.lastRunSummary = data.summary || saved.lastRunSummary || null;
     state.lastOutputs = data.outputs || saved.lastOutputs || [];
+    state.previewMapUrl = saved.previewMapUrl || null;
     setLabelOrderSelection((state.runInputs && state.runInputs.labelOrder) || "auto", { scope: "results" });
     renderOutputs(state.lastOutputs);
     renderMetrics(state.lastRunSummary || {});
     if (data.summary && data.summary.mapReport) {
       setMapPreview(data.summary.mapReport);
+    } else if (state.previewMapUrl) {
+      setMapPreview(null, state.previewMapUrl);
     }
     if (data.finishedAt) {
-      el.snapshotLastRun.textContent = `Completed ${new Date(data.finishedAt).toLocaleString()}`;
+      const restoreRunKind = (data.inputs && data.inputs.runKind) || "refine";
+      const restoredReviewWorkbook = !!(
+        data.inputs && (data.inputs.coordinateReviewFile || data.inputs.browserReviewDecisionCount)
+      );
+      el.snapshotLastRun.textContent = `${describeCompletedAction(restoreRunKind, restoredReviewWorkbook)} at ${new Date(data.finishedAt).toLocaleString()}`;
     }
 
     await fetchReviewQueue(state.runId);
@@ -2409,26 +2972,72 @@ async function restoreUiSession() {
         ? "Report running"
         : (runKind === "relabel"
           ? "Regenerating labels"
-          : (runKind === "review_apply" ? "Applying review decisions" : "Refinement running"));
+          : (runKind === "review" ? "Applying review decisions" : "Refinement running"));
       setStatus("running", runningTitle, data.message || "Run in progress.");
       el.snapshotTag.textContent = "Running";
       el.snapshotStatus.textContent = data.message || "Run in progress.";
       setProgressRunning(true);
       setReportProgressRunning(runKind === "report");
       state.logSeq = 0;
-      pollLogs();
+      await pollLogs();
       if (!state.pollTimer) {
         state.pollTimer = window.setInterval(pollLogs, 1200);
       }
     } else {
+      const runKind = (data.inputs && data.inputs.runKind) || "refine";
+      const usedReviewWorkbook = !!(
+        data.inputs && (data.inputs.coordinateReviewFile || data.inputs.browserReviewDecisionCount)
+      );
+      if (data.status === "success") {
+        setStatus(
+          "success",
+          runKind === "report"
+            ? "Report complete"
+            : (runKind === "relabel"
+              ? "Labels regenerated"
+              : (usedReviewWorkbook ? "Review decisions applied" : "Refinement complete")),
+          data.message || "Outputs ready."
+        );
+        el.snapshotTag.textContent = "Complete";
+        el.snapshotStatus.textContent = runKind === "report"
+          ? "PDF report completed successfully."
+          : (runKind === "relabel"
+            ? "Refined output and KMZ labels were updated."
+            : (usedReviewWorkbook
+              ? "Refinement reran with approved coordinates."
+              : "Refinement completed successfully."));
+      } else if (data.status) {
+        setStatus(
+          "error",
+          runKind === "report"
+            ? "Report failed"
+            : (runKind === "relabel"
+              ? "Label regeneration failed"
+              : (usedReviewWorkbook ? "Review apply failed" : "Refinement failed")),
+          data.message || "Review the run log."
+        );
+        el.snapshotTag.textContent = "Failed";
+        el.snapshotStatus.textContent = runKind === "report"
+          ? "PDF report encountered errors."
+          : (runKind === "relabel"
+            ? "Relabeling encountered errors."
+            : (usedReviewWorkbook
+              ? "Approved coordinate rerun encountered errors."
+              : "Refinement encountered errors."));
+      }
+      syncConeTrackerToUiContext(data.status || "");
       setProgressRunning(false);
       setReportProgressRunning(false);
+      unlockUiAfterRun();
     }
     setAdvancedToolsOpen(!!saved.advancedToolsOpen);
     setTechnicalDetailsOpen(!!saved.detailsPanelOpen);
     updateStageAvailability();
     updateRunButton();
     updateLabelOrderControls();
+    if (data.status === "running") {
+      setUiBusy(true);
+    }
     renderStageChrome();
   } catch (_error) {
     clearUiSession();
@@ -2442,6 +3051,27 @@ async function restoreUiSession() {
 }
 
 function setupDropZone(zone, input, handler) {
+  const openFilePicker = () => {
+    if (!input || input.disabled) return;
+    if (typeof input.showPicker === "function") {
+      input.showPicker();
+      return;
+    }
+    input.click();
+  };
+
+  zone.setAttribute("role", "button");
+  zone.setAttribute("tabindex", input.disabled ? "-1" : "0");
+
+  zone.addEventListener("click", (event) => {
+    if (event.target === input) return;
+    openFilePicker();
+  });
+  zone.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    openFilePicker();
+  });
   zone.addEventListener("dragover", (event) => {
     event.preventDefault();
     zone.classList.add("dragover");
@@ -2504,6 +3134,16 @@ function bindInputs() {
   }
   if (el.resultsResumeReview) {
     el.resultsResumeReview.addEventListener("click", () => setUiStage("review"));
+  }
+  if (el.centerSuggestedPoint) {
+    el.centerSuggestedPoint.addEventListener("click", () => {
+      const current = getCurrentReviewStep();
+      if (!current || !state.reviewMap || !(current.hasSuggestion && current.suggestedLatitude != null && current.suggestedLongitude != null)) {
+        return;
+      }
+      state.reviewMap.setView([current.suggestedLatitude, current.suggestedLongitude], 17);
+      showToast("Centered on the suggested placement.");
+    });
   }
   [el.stageStepInputs, el.stageStepReview, el.stageStepResults].forEach((button) => {
     if (!button) return;
@@ -2586,10 +3226,7 @@ function bindInputs() {
     });
   }
   el.clearSession.addEventListener("click", () => {
-    if (state.pollTimer) {
-      window.clearInterval(state.pollTimer);
-      state.pollTimer = null;
-    }
+    clearPollingTimer();
     if (state.previewTimer) {
       window.clearTimeout(state.previewTimer);
       state.previewTimer = null;
@@ -2598,6 +3235,7 @@ function bindInputs() {
     state.runId = null;
     state.logSeq = 0;
     clearLogs();
+    setUiBusy(false);
     state.dataFile = null;
     state.kmzFile = null;
     state.pdfDataFile = null;
@@ -2605,6 +3243,7 @@ function bindInputs() {
     state.runInputs = null;
     state.lastRunSummary = null;
     state.lastOutputs = [];
+    state.previewMapUrl = null;
     state.reviewQueue = [];
     state.reviewSecondaryQueue = [];
     state.reviewDecisions = {};
@@ -2652,7 +3291,7 @@ function bindInputs() {
       el.metrics.innerHTML = "";
     }
     el.mapPlaceholder.textContent = "The map appears here once files are loaded.";
-    setMapPreview(null);
+    setMapPreview(null, null, { clearStoredPreview: true });
     renderReviewQueue();
     setReportProgressRunning(false);
     setReviewWorkbenchTab("map");
@@ -2716,7 +3355,7 @@ function bindReviewShortcuts() {
     }
 
     const key = event.key.toLowerCase();
-    if (key === "a" && current.hasSuggestion && current.suggestedInsideBoundary !== false) {
+    if ((key === "s" || key === "u") && current.hasSuggestion && current.suggestedInsideBoundary !== false) {
       event.preventDefault();
       confirmSuggestedPlacement(current.rowKey);
       return;
@@ -2726,9 +3365,25 @@ function bindReviewShortcuts() {
       beginMapPlacement(current.rowKey);
       return;
     }
+    if ((key === "c" || key === "enter")) {
+      const draftPlacement = getDraftPlacement(current);
+      if (draftPlacement && pointInProjectBoundary(draftPlacement.latitude, draftPlacement.longitude)) {
+        event.preventDefault();
+        confirmManualPlacement(current.rowKey);
+        return;
+      }
+    }
+    if (key === "n") {
+      event.preventDefault();
+      moveToNextReviewStep();
+      state.reviewMapPickMode = false;
+      state.reviewMapFocusKey = null;
+      renderReviewQueue();
+      return;
+    }
     if (key === "x") {
       event.preventDefault();
-      rejectReviewCrash(current.rowKey);
+      toggleCrashExclusion(current.rowKey);
     }
   });
 }

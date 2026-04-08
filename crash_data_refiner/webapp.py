@@ -51,6 +51,8 @@ MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="")
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
+
+
 def _create_state() -> RunState:
     state = RunState(run_id=_new_id(), created_at=_utcnow())
     with RUNS_LOCK:
@@ -138,6 +140,11 @@ def _update_summary_for_relabel(
 @app.route("/")
 def index() -> Any:
     return send_from_directory(STATIC_DIR, "index.html")
+
+
+@app.route("/favicon.ico")
+def favicon() -> Any:
+    return send_from_directory(STATIC_DIR, "favicon.svg", mimetype="image/svg+xml")
 
 
 @app.route("/api/settings")

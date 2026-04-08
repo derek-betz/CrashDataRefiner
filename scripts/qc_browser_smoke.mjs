@@ -94,14 +94,14 @@ async function run() {
     await page.locator('[data-action="wizard-exclude"]').first().waitFor({ timeout: 60000 });
     logStep("Refinement completed and review stage loaded.");
 
-    const suggestedPlacementText = ((await page.locator(".wizard-suggestion-body").first().textContent()) || "").trim();
-    if (suggestedPlacementText.startsWith("Suggested point:")) {
+    const suggestedPlacementText = ((await page.locator(".wizard-chip-row .meta-chip").filter({ hasText: /^Suggested / }).first().textContent()) || "").trim();
+    if (suggestedPlacementText.startsWith("Suggested ")) {
       assert(
         !/0\.000000,\s*0\.000000/.test(suggestedPlacementText),
         `Review wizard surfaced an origin suggested placement for ${datasetLabel}: ${suggestedPlacementText}`,
       );
       assert(
-        !/\(outside KMZ\)/i.test(suggestedPlacementText),
+        !/outside/i.test(suggestedPlacementText),
         `Review wizard surfaced an outside-KMZ suggested placement for ${datasetLabel}: ${suggestedPlacementText}`,
       );
       logStep("First suggested placement passed browser sanity checks.");
@@ -116,7 +116,6 @@ async function run() {
     const excludeButton = page.locator('[data-action="wizard-exclude"]').first();
     await excludeButton.scrollIntoViewIfNeeded();
     await excludeButton.click();
-    await page.getByRole("button", { name: "Confirm Exclusion" }).click();
     await page.waitForFunction(() => {
       const button = document.querySelector("#apply-browser-review");
       return button && !button.disabled;
@@ -130,7 +129,7 @@ async function run() {
 
     const summaryText = await page.locator("#results-summary-line").textContent();
     assert(
-      /\b[1-9]\d* row\(s\) were excluded from the project by manual review\./.test(summaryText || ""),
+      /\b[1-9]\d*\s+excluded\b/i.test(summaryText || ""),
       `Manual exclusion count did not update in Results summary: ${summaryText}`,
     );
 

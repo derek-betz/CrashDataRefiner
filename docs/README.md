@@ -126,6 +126,71 @@ The smoke script exercises the representative `2101166` workflow end to end:
 
 Screenshots are written to `outputs/qc_browser_smoke/`.
 
+## CLI-First Playwright UI Audit
+
+For interactive browser QA, prefer the Playwright skill wrapper over checked-in
+Playwright specs. This keeps UI debugging fast while still saving artifacts in
+the repo.
+
+Start the Flask app locally:
+
+```bash
+.venv/bin/python -m crash_data_refiner.webapp --host 127.0.0.1 --port 8081
+```
+
+Use the bundled Playwright helper script from a second terminal:
+
+```bash
+scripts/playwright_skill_audit.sh open
+scripts/playwright_skill_audit.sh desktop
+scripts/playwright_skill_audit.sh capture initial-load
+```
+
+Recommended fixture set:
+
+- `tests/refiner_inputs/2101166_Crash-Data.xlsx`
+- `tests/refiner_inputs/2101166_Relevance Boundary.kmz`
+
+Representative manual flow:
+
+```bash
+export CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
+export PWCLI="$CODEX_HOME/skills/playwright/scripts/playwright_cli.sh"
+
+scripts/playwright_skill_audit.sh open
+"$PWCLI" --session default snapshot
+"$PWCLI" --session default click eX
+"$PWCLI" --session default upload "/absolute/path/to/tests/refiner_inputs/2101166_Crash-Data.xlsx"
+"$PWCLI" --session default snapshot
+"$PWCLI" --session default click eY
+"$PWCLI" --session default upload "/absolute/path/to/tests/refiner_inputs/2101166_Relevance Boundary.kmz"
+"$PWCLI" --session default snapshot
+"$PWCLI" --session default click eZ
+scripts/playwright_skill_audit.sh capture review-stage
+scripts/playwright_skill_audit.sh mobile
+scripts/playwright_skill_audit.sh capture mobile-review
+```
+
+Replace `eX`, `eY`, and `eZ` with the current snapshot refs for the crash-data
+picker, the KMZ picker, and the action you want to exercise next. Re-snapshot
+after each major UI transition so refs stay current.
+
+Artifacts are written under `output/playwright/`:
+
+- `snapshot.md`
+- `screenshot.png`
+- `console-error.txt`
+- `network.txt`
+- copied `.playwright-cli/` session artifacts for traces and command history
+
+Suggested audit checkpoints:
+
+1. Initial load and favicon/static asset requests are clean.
+2. Column inference, preview map, and refine are available once inputs load.
+3. Review-stage decisions, map placement, and apply-review flows stay in sync.
+4. Results-stage relabel, open-map, report generation, and session restore work
+   on both desktop and mobile widths.
+
 Reference-dataset QC:
 
 ```bash

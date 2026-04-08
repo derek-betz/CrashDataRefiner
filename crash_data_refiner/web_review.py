@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from zipfile import BadZipFile
 
 from .coordinate_recovery import (
     CoordinateReviewDecision,
@@ -14,6 +15,49 @@ from .geo import is_usable_coordinate_pair, load_kmz_polygon, parse_coordinate
 from .normalize import normalize_header
 from .output_paths import coordinate_review_output_path, refined_output_path
 from .spreadsheets import read_spreadsheet
+
+
+_REVIEW_ID_KEYS = ("crash_id", "master_record_number", "local_code")
+_REVIEW_ROUTE_KEYS = ("roadway_id", "road_number", "roadway_number", "route", "roadway_name", "road_name")
+_REVIEW_CROSS_KEYS = (
+    "intersecting_road_number",
+    "intersection_number",
+    "intersecting_road",
+    "intersecting_road_name",
+    "intersection_name",
+)
+_REVIEW_LOCALITY_KEYS = ("city", "township", "county")
+
+
+def _normalize_review_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {normalize_header(key): value for key, value in row.items()}
+
+
+def _first_review_text(row: Dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _build_context_crash(row: Dict[str, Any], *, latitude: float, longitude: float) -> Dict[str, Any]:
+    route = _first_review_text(row, _REVIEW_ROUTE_KEYS)
+    cross = _first_review_text(row, _REVIEW_CROSS_KEYS)
+    locality_parts = [part for part in (_first_review_text(row, (key,)) for key in _REVIEW_LOCALITY_KEYS) if part]
+    locality = " / ".join(locality_parts)
+    detail_parts = []
+    if cross:
+        detail_parts.append(f"At {cross}")
+    if locality:
+        detail_parts.append(locality)
+    return {
+        "latitude": latitude,
+        "longitude": longitude,
+        "crashId": _first_review_text(row, _REVIEW_ID_KEYS),
+        "title": route or cross or "Refined crash",
+        "detail": " | ".join(detail_parts) or "Refined crash inside the project boundary.",
+    }
 
 
 def resolve_coordinate_review_path(state: Any) -> Optional[Path]:
@@ -64,21 +108,28 @@ def load_review_map_data_for_state(state: Any) -> Optional[Dict[str, Any]]:
         return None
 
     boundary = load_kmz_polygon(str(kmz_path))
-    refined_data = read_spreadsheet(str(refined_path))
+    try:
+        refined_data = read_spreadsheet(str(refined_path))
+    except (BadZipFile, OSError, ValueError):
+        return None
     lat_key = normalize_header(lat_column)
     lon_key = normalize_header(lon_column)
     points: List[List[float]] = []
+    context_crashes: List[Dict[str, Any]] = []
     for row in refined_data.rows:
-        lat = parse_coordinate(row.get(lat_key))
-        lon = parse_coordinate(row.get(lon_key))
+        normalized_row = _normalize_review_row(row)
+        lat = parse_coordinate(normalized_row.get(lat_key))
+        lon = parse_coordinate(normalized_row.get(lon_key))
         if not is_usable_coordinate_pair(lat, lon):
             continue
         points.append([lat, lon])
+        context_crashes.append(_build_context_crash(normalized_row, latitude=lat, longitude=lon))
 
     return {
         "polygon": polygon_to_leaflet(boundary),
         "points": points,
         "pointCount": len(points),
+        "contextCrashes": context_crashes,
     }
 
 
@@ -91,7 +142,14 @@ def load_review_wizard_for_state(state: Any) -> Dict[str, Any]:
             "mapData": None,
         }
 
-    data = read_spreadsheet(str(review_path))
+    try:
+        data = read_spreadsheet(str(review_path))
+    except (BadZipFile, OSError, ValueError):
+        return {
+            "primarySteps": [],
+            "secondarySteps": [],
+            "mapData": load_review_map_data_for_state(state),
+        }
     steps = build_coordinate_review_wizard_steps(data.rows)
     primary_steps = [
         step for step in steps

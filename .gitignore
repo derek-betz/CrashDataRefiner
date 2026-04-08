@@ -4,6 +4,9 @@ __pycache__/
 *.egg-info/
 crash_data_refiner.egg-info/
 outputs/
+output/playwright/*
+!output/playwright/.gitkeep
+.playwright-cli/
 outputs-for-reference/Example Crash Data Summary Page.jpg
 .pytest_cache/
 node_modules/
