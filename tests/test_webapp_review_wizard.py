@@ -6,7 +6,7 @@ import json
 import time
 import zipfile
 
-from crash_data_refiner.services import coordinate_review_output_path, pdf_output_path, refined_output_path
+from crash_data_refiner.services import coordinate_review_output_path, refined_output_path
 from crash_data_refiner.spreadsheets import write_spreadsheet
 from crash_data_refiner.webapp import (
     RUNS,
@@ -178,7 +178,7 @@ def test_run_review_wizard_endpoint_returns_steps_and_map_data(tmp_path: Path) -
             RUNS.pop(run_id, None)
 
 
-def test_relabel_endpoint_rewrites_outputs_and_removes_stale_pdf(tmp_path: Path) -> None:
+def test_relabel_endpoint_rewrites_outputs(tmp_path: Path) -> None:
     run_id = "relabeltest123"
     output_dir = tmp_path / run_id
     input_dir = output_dir / "inputs"
@@ -197,9 +197,6 @@ def test_relabel_endpoint_rewrites_outputs_and_removes_stale_pdf(tmp_path: Path)
             {"crash_id": "2", "lat": 35.0, "lon": -86.0, "kmz_label": 2},
         ],
     )
-    stale_pdf = pdf_output_path(refined_path)
-    stale_pdf.write_bytes(b"%PDF-1.4\n")
-
     state = RunState(run_id=run_id, created_at=datetime.now(timezone.utc), output_dir=output_dir)
     state.status = "success"
     state.inputs = {
@@ -230,7 +227,6 @@ def test_relabel_endpoint_rewrites_outputs_and_removes_stale_pdf(tmp_path: Path)
         assert state.inputs["runKind"] == "relabel"
         assert state.inputs["labelOrder"] == "south_to_north"
         assert state.inputs["resolvedLabelOrder"] == "south_to_north"
-        assert not stale_pdf.exists()
         assert "labelOrdering" in state.summary
         assert state.summary["labelOrdering"]["resolved"] == "south_to_north"
     finally:

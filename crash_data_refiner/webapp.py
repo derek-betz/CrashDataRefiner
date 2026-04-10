@@ -15,12 +15,9 @@ from .normalize import guess_lat_lon_columns
 from .refiner import RefinementReport
 from .run_contract import RunOutputCounts, load_output_counts_from_refined_path
 from .services import (
-    pdf_output_path,
     refined_output_path,
     relabel_refined_outputs,
-    run_pdf_report,
     run_refinement_pipeline,
-    summary_output_path,
     kmz_output_path,
 )
 from .spreadsheets import read_spreadsheet_headers, read_spreadsheet_preview_points
@@ -461,106 +458,6 @@ def apply_coordinate_review() -> Any:
     thread.start()
 
     return jsonify({"runId": state.run_id})
-
-
-@app.route("/api/report", methods=["POST"])
-def start_report() -> Any:
-    data_upload = request.files.get("data_file")
-    pdf_upload = request.files.get("pdf_data_file")
-    source_run_id = request.form.get("source_run_id", "").strip() or None
-    lat_column = request.form.get("lat_column", "").strip()
-    lon_column = request.form.get("lon_column", "").strip()
-
-    source_state = None
-    if source_run_id:
-        with RUNS_LOCK:
-            source_state = RUNS.get(source_run_id)
-        if not source_state or not source_state.output_dir:
-            return jsonify({"error": "Previous run not found."}), 404
-
-    state = _create_state()
-    try:
-        output_dir = OUTPUT_ROOT / state.run_id
-        if source_state and source_state.output_dir:
-            output_dir = source_state.output_dir
-            state.summary = dict(source_state.summary or {})
-            state.inputs = dict(source_state.inputs or {})
-            state.inputs["sourceRun"] = source_run_id
-            state.inputs["runKind"] = "report"
-
-        input_dir = output_dir / "inputs"
-        pdf_path = None
-        data_path = None
-        source_name = ""
-
-        if pdf_upload and pdf_upload.filename:
-            pdf_path = _save_upload(
-                pdf_upload,
-                dest_dir=input_dir,
-                allowed_exts=(".csv", ".xlsx", ".xlsm"),
-                label="PDF data file",
-            )
-            source_name = pdf_path.name
-            state.inputs["pdfDataFile"] = source_name
-        elif source_state:
-            data_name = (source_state.inputs or {}).get("dataFile")
-            if not data_name:
-                raise ValueError("Previous run is missing the crash data file reference.")
-            source_name = data_name
-            data_path = refined_output_path(output_dir, data_name)
-            if not data_path.exists():
-                raise ValueError("Refined output from the previous run was not found.")
-        else:
-            if data_upload is None or not data_upload.filename:
-                raise ValueError("Crash data file is required.")
-            data_ext = Path(data_upload.filename).suffix.lower()
-            if data_ext not in {".csv", ".xlsx", ".xlsm"}:
-                raise ValueError("Crash data must be CSV or Excel.")
-            data_path = _save_upload(
-                data_upload,
-                dest_dir=input_dir,
-                allowed_exts=(".csv", ".xlsx", ".xlsm"),
-                label="Crash data file",
-            )
-            source_name = data_path.name
-            state.inputs["dataFile"] = source_name
-
-        state.inputs["runKind"] = "report"
-        state.output_dir = output_dir
-        source_path = pdf_path or data_path
-        if source_path is None:
-            raise ValueError("Report data source not available.")
-
-        if not lat_column or not lon_column:
-            headers = read_spreadsheet_headers(str(source_path))
-            lat_guess, lon_guess = guess_lat_lon_columns(headers)
-            if not lat_column and lat_guess:
-                lat_column = lat_guess
-            if not lon_column and lon_guess:
-                lon_column = lon_guess
-
-        if not lat_column or not lon_column:
-            raise ValueError("Latitude and longitude columns are required.")
-
-        state.inputs["latColumn"] = lat_column
-        state.inputs["lonColumn"] = lon_column
-
-        output_path = refined_output_path(output_dir, source_name)
-        pdf_out_path = pdf_output_path(output_path)
-    except Exception as exc:
-        _discard_state(state.run_id)
-        return jsonify({"error": str(exc)}), 400
-
-    thread = threading.Thread(
-        target=_run_report_job,
-        args=(state, source_path, pdf_out_path, lat_column, lon_column),
-        daemon=True,
-    )
-    thread.start()
-
-    return jsonify({"runId": state.run_id})
-
-
 def _run_refinement_job(
     state: RunState,
     data_path: Path,
@@ -689,53 +586,6 @@ def _run_relabel_job(
         state.finished_at = _utcnow()
         if state.output_dir:
             state.outputs = _list_outputs(state.output_dir)
-
-
-def _run_report_job(
-    state: RunState,
-    source_path: Path,
-    pdf_out_path: Path,
-    lat_column: str,
-    lon_column: str,
-) -> None:
-    state.status = "running"
-    state.started_at = _utcnow()
-    state.message = "Preparing PDF report."
-    state.append_log(f"Generating PDF report from {source_path.name}")
-
-    def _report_progress(current: int, total: int) -> None:
-        if total <= 0:
-            state.message = "Preparing PDF report."
-            return
-        if current <= 0:
-            state.message = f"Preparing PDF report ({total} page(s) queued)."
-            return
-        state.message = f"Generating PDF report ({current} of {total} pages rendered)."
-        if total <= 5 or current == 1 or current == total or current % 10 == 0:
-            state.append_log(f"Rendered PDF page {current} of {total}.")
-
-    try:
-        run_pdf_report(
-            source_path=source_path,
-            output_path=pdf_out_path,
-            lat_column=lat_column,
-            lon_column=lon_column,
-            progress_callback=_report_progress,
-        )
-        state.status = "success"
-        state.message = "PDF report generated."
-        state.append_log(state.message)
-    except Exception as exc:
-        state.status = "error"
-        state.error = str(exc)
-        state.message = "PDF report failed."
-        state.append_log(f"Error: {exc}", level="error")
-    finally:
-        state.finished_at = _utcnow()
-        if state.output_dir:
-            state.outputs = _list_outputs(state.output_dir)
-
-
 @app.route("/api/run/<run_id>")
 def run_status(run_id: str) -> Any:
     state = _get_state(run_id)
@@ -817,10 +667,6 @@ def relabel_run_outputs(run_id: str) -> Any:
         return jsonify({"error": "Refined output for this run was not found."}), 404
 
     state.inputs["runKind"] = "relabel"
-    stale_output_paths = [
-        pdf_output_path(refined_path),
-        summary_output_path(refined_path),
-    ]
     thread = threading.Thread(
         target=_run_relabel_job,
         kwargs={
@@ -830,7 +676,7 @@ def relabel_run_outputs(run_id: str) -> Any:
             "lat_column": lat_column,
             "lon_column": lon_column,
             "label_order": label_order,
-            "stale_output_paths": stale_output_paths,
+            "stale_output_paths": [],
         },
         daemon=True,
     )

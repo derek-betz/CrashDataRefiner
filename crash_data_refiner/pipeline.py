@@ -18,13 +18,10 @@ from .output_paths import (
     coordinate_review_output_path,
     invalid_output_path,
     kmz_output_path,
-    pdf_output_path,
     refined_output_path,
     rejected_review_output_path,
-    summary_output_path,
 )
 from .normalize import guess_lat_lon_columns
-from .pdf_report import generate_pdf_report
 from .refiner import CrashDataRefiner, RefinementReport
 from .spreadsheets import read_spreadsheet, read_spreadsheet_headers, write_spreadsheet
 
@@ -345,27 +342,6 @@ def load_headers_and_guess_columns(
     headers = read_spreadsheet_headers(data_path)
     lat_guess, lon_guess = guess_lat_lon_columns(headers)
     return headers, lat_guess, lon_guess
-
-
-def run_pdf_report(
-    *,
-    source_path: Path,
-    output_path: Path,
-    lat_column: str,
-    lon_column: str,
-    progress_callback: Callable[[int, int], None] | None = None,
-) -> None:
-    """Generate a PDF full report from *source_path* and write to *output_path*."""
-    data = read_spreadsheet(str(source_path))
-    generate_pdf_report(
-        str(output_path),
-        rows=data.rows,
-        latitude_column=lat_column,
-        longitude_column=lon_column,
-        progress_callback=progress_callback,
-    )
-
-
 __all__ = [
     "RefinementResult",
     "RelabelResult",
@@ -374,11 +350,8 @@ __all__ = [
     "invalid_output_path",
     "kmz_output_path",
     "load_headers_and_guess_columns",
-    "pdf_output_path",
     "refined_output_path",
     "rejected_review_output_path",
     "relabel_refined_outputs",
-    "run_pdf_report",
     "run_refinement_pipeline",
-    "summary_output_path",
 ]

@@ -1,7 +1,6 @@
 const state = {
   dataFile: null,
   kmzFile: null,
-  pdfDataFile: null,
   reviewFile: null,
   runInputs: null,
   lastRunSummary: null,
@@ -55,10 +54,6 @@ const el = {
   kmzInput: document.getElementById("kmz-input"),
   kmzLabel: document.getElementById("kmz-label"),
   kmzHint: document.getElementById("kmz-hint"),
-  pdfDrop: document.getElementById("pdf-drop"),
-  pdfInput: document.getElementById("pdf-input"),
-  pdfLabel: document.getElementById("pdf-label"),
-  pdfHint: document.getElementById("pdf-hint"),
   reviewDrop: document.getElementById("review-drop"),
   reviewInput: document.getElementById("review-input"),
   reviewLabel: document.getElementById("review-label"),
@@ -70,9 +65,7 @@ const el = {
   columnOptions: document.getElementById("column-options"),
   columnHint: document.getElementById("column-hint"),
   columnLoadingIndicator: document.getElementById("column-loading-indicator"),
-  generateReport: document.getElementById("generate-report"),
   applyReview: document.getElementById("apply-review"),
-  reportProgress: document.getElementById("report-progress"),
   progressBar: document.getElementById("progress-bar"),
   statusBar: document.getElementById("status-bar"),
   statusTitle: document.getElementById("status-title"),
@@ -136,7 +129,6 @@ const el = {
   applyBrowserReview: document.getElementById("apply-browser-review"),
   reviewSkipToResults: document.getElementById("review-skip-to-results"),
   resultsSummaryLine: document.getElementById("results-summary-line"),
-  resultsGenerateReport: document.getElementById("results-generate-report"),
   resultsOpenMap: document.getElementById("results-open-map"),
   resultsResumeReview: document.getElementById("results-resume-review"),
   resultsLabelOrder: document.getElementById("results-label-order"),
@@ -160,8 +152,6 @@ const SESSION_KEY = "crash-data-refiner-ui-state-v2";
 const LEGACY_SESSION_KEYS = ["crash-data-refiner-ui-state"];
 const UI_BUSY_CONTROLS = [
   "runRefine",
-  "generateReport",
-  "resultsGenerateReport",
   "applyReview",
   "applyBrowserReview",
   "resultsRelabel",
@@ -206,7 +196,6 @@ function unlockUiAfterRun() {
   setUiBusy(false);
   updateRunButton();
   updateReviewButton();
-  updateReportButton();
   updateRelabelButton();
   updateStageAvailability();
   updateLabelOrderControls();
@@ -220,7 +209,6 @@ function handleRunConnectionFailure(
 ) {
   clearPollingTimer();
   setProgressRunning(false);
-  setReportProgressRunning(false);
   setStatus("error", title, detail);
   el.snapshotTag.textContent = "Failed";
   el.snapshotStatus.textContent = detail;
@@ -269,11 +257,6 @@ function setProgressRunning(isRunning) {
   el.progressBar.parentElement.classList.toggle("running", isRunning);
 }
 
-function setReportProgressRunning(isRunning) {
-  if (!el.reportProgress) return;
-  el.reportProgress.classList.toggle("running", isRunning);
-}
-
 function updateRunButton() {
   const hasData = !!state.dataFile;
   const hasKmz = !!state.kmzFile;
@@ -283,21 +266,12 @@ function updateRunButton() {
   if (el.stageStepInputs) {
     el.stageStepInputs.disabled = false;
   }
-  updateReportButton();
   updateReviewButton();
   updateRelabelButton();
   updateReadinessChecklist();
   updateStageAvailability();
   updateLabelOrderControls();
   renderStageChrome();
-}
-
-function updateReportButton() {
-  const hasSource = !!state.pdfDataFile || !!state.runId || !!state.dataFile;
-  el.generateReport.disabled = !hasSource;
-  if (el.resultsGenerateReport) {
-    el.resultsGenerateReport.disabled = !hasSource;
-  }
 }
 
 function updateReviewButton() {
@@ -437,7 +411,6 @@ function setTechnicalDetailsOpen(isOpen) {
 function resetTransientInputUi() {
   el.dataInput.value = "";
   el.kmzInput.value = "";
-  el.pdfInput.value = "";
   el.reviewInput.value = "";
   el.latColumn.value = "";
   el.lonColumn.value = "";
@@ -445,8 +418,6 @@ function resetTransientInputUi() {
   el.dataHint.textContent = "Drop file or click to browse";
   el.kmzLabel.textContent = "Boundary KMZ (.kmz)";
   el.kmzHint.textContent = "One polygon only";
-  el.pdfLabel.textContent = "Alternate PDF source (.csv, .xlsx)";
-  el.pdfHint.textContent = "Optional";
   el.reviewLabel.textContent = "Reviewed coordinate workbook";
   el.reviewHint.textContent = "Upload a reviewed workbook";
   if (el.columnHint) {
@@ -650,7 +621,6 @@ function renderStageChrome() {
 }
 
 function describeCompletedAction(runKind, usedReviewWorkbook) {
-  if (runKind === "report") return "Last action: PDF report generated";
   if (runKind === "relabel") return "Last action: KMZ labels regenerated";
   if (usedReviewWorkbook) return "Last action: Review decisions applied";
   return "Last action: Refinement completed";
@@ -671,7 +641,7 @@ function getCurrentRunFocus() {
     return "Current run: review likely in-project crashes and place missing coordinates.";
   }
   if (state.uiStage === "results" && state.runId) {
-    return "Current run: outputs are ready for download, relabeling, or report generation.";
+    return "Current run: outputs are ready for download, relabeling, or review.";
   }
   if (state.dataFile || state.kmzFile) {
     return "Current run: project inputs are loaded and ready for refinement.";
@@ -1018,14 +988,6 @@ function renderOutputs(outputs) {
         detail: "Reference workbook of source rows that arrived without usable latitude and longitude values.",
       };
     }
-    if (/\.pdf$/i.test(name)) {
-      return {
-        title: "PDF crash report",
-        order: 2,
-        group: "Primary deliverables",
-        detail: "Shareable formatted report of refined crash records and summary output.",
-      };
-    }
     return {
       title: name,
       order: 10,
@@ -1183,20 +1145,6 @@ function buildRunFormData() {
   form.append("lat_column", el.latColumn.value.trim());
   form.append("lon_column", el.lonColumn.value.trim());
   form.append("label_order", el.labelOrder.value);
-  return form;
-}
-
-function buildReportFormData() {
-  const form = new FormData();
-  form.append("lat_column", el.latColumn.value.trim());
-  form.append("lon_column", el.lonColumn.value.trim());
-  if (state.pdfDataFile) {
-    form.append("pdf_data_file", state.pdfDataFile);
-  } else if (state.runId) {
-    form.append("source_run_id", state.runId);
-  } else if (state.dataFile) {
-    form.append("data_file", state.dataFile);
-  }
   return form;
 }
 
@@ -2241,7 +2189,6 @@ async function startRun() {
   setUiStage("inputs", { persist: false });
   setStatus("running", "Refinement running", "Crash data pipeline is processing.");
   setProgressRunning(true);
-  setReportProgressRunning(false);
   updateConeTracker("running");
   setUiBusy(true);
   el.snapshotTag.textContent = "Running";
@@ -2277,53 +2224,6 @@ async function startRun() {
   }
 }
 
-async function startReport() {
-  if (!state.pdfDataFile && !state.runId && !state.dataFile) {
-    showToast("Select a crash data or PDF report file first.");
-    return;
-  }
-  clearLogs();
-  clearPollingTimer();
-  setUiStage("results", { persist: false });
-  setStatus("running", "Report running", "Generating PDF crash report.");
-  setProgressRunning(true);
-  setReportProgressRunning(true);
-  updateConeTracker("running");
-  setUiBusy(true);
-  el.snapshotTag.textContent = "Running";
-  el.snapshotStatus.textContent = "Generating PDF report.";
-  el.outputLinks.textContent = "Report in progress...";
-
-  try {
-    const response = await fetch("/api/report", {
-      method: "POST",
-      body: buildReportFormData(),
-    });
-    const data = await parseJsonSafe(response);
-    if (!response.ok) {
-      showToast(data.error || "Unable to start report.");
-      setStatus("error", "Report failed to start", "Check inputs and try again.");
-      setProgressRunning(false);
-      setReportProgressRunning(false);
-      unlockUiAfterRun();
-      return;
-    }
-    state.runId = data.runId;
-    state.logSeq = 0;
-    saveUiSession();
-    await pollLogs();
-    if (!state.pollTimer && el.statusBar.dataset.state === "running") {
-      state.pollTimer = window.setInterval(pollLogs, 1200);
-    }
-  } catch (_error) {
-    handleRunConnectionFailure(
-      "Report failed to start",
-      "Unable to reach the report service.",
-      "Unable to start report."
-    );
-  }
-}
-
 async function startApplyReview() {
   if (!state.runId || !state.reviewFile) {
     showToast("Run refinement first, then upload a reviewed coordinate workbook.");
@@ -2334,7 +2234,6 @@ async function startApplyReview() {
   setUiStage("results", { persist: false });
   setStatus("running", "Applying review decisions", "Re-running refinement with approved coordinates.");
   setProgressRunning(true);
-  setReportProgressRunning(false);
   updateConeTracker("running");
   setUiBusy(true);
   el.snapshotTag.textContent = "Running";
@@ -2396,7 +2295,6 @@ async function startApplyBrowserReview() {
   setUiStage("results", { persist: false });
   setStatus("running", "Applying browser review", "Re-running refinement with reviewed crash placements.");
   setProgressRunning(true);
-  setReportProgressRunning(false);
   updateConeTracker("running");
   setUiBusy(true);
   el.snapshotTag.textContent = "Running";
@@ -2454,7 +2352,6 @@ async function startRelabel() {
   setUiStage("results", { persist: false });
   setStatus("running", "Regenerating labels", "Updating the refined spreadsheet and KMZ numbering.");
   setProgressRunning(true);
-  setReportProgressRunning(false);
   updateConeTracker("running");
   setUiBusy(true);
   el.snapshotTag.textContent = "Running";
@@ -2507,7 +2404,6 @@ function getConeRuntimeSignals() {
     hasLabels: combined.includes("kmz labels ordered"),
     hasRefined: combined.includes("refined output saved"),
     hasKmz: combined.includes("kmz report generated"),
-    hasPdf: combined.includes(".pdf") || combined.includes("report generated"),
     hasReviewApply: combined.includes("review decisions"),
     hasRelabel: combined.includes("relabel") || combined.includes("labels regenerated"),
     hasValidated: combined.includes("output invariants validated"),
@@ -2553,7 +2449,6 @@ function getConeProgress(phase, milestoneId) {
 function getConeNote(phase, milestoneId) {
   const sig = getConeRuntimeSignals();
   if (phase === "success") {
-    if (sig.hasPdf) return "Report stamped and ready.";
     if (sig.hasRelabel) return "Fresh KMZ labels are ready.";
     if (sig.hasReviewApply) return "Approved placements folded into outputs.";
     return "Lane clear. Outputs are ready.";
@@ -2563,14 +2458,13 @@ function getConeNote(phase, milestoneId) {
   if (milestoneId === "load") return sig.hasBoundary ? "Boundary loaded. Reading crash rows." : "Loading crash data and project boundary.";
   if (milestoneId === "normalize") return "Checking headers and recovering likely coordinates.";
   if (milestoneId === "filter") return "Comparing crash patterns against the project boundary.";
-  if (milestoneId === "output") return sig.hasPdf ? "Formatting the report deliverable." : "Writing the workbook, KMZ, and review artifacts.";
+  if (milestoneId === "output") return "Writing the workbook, KMZ, and review artifacts.";
   return "Processing.";
 }
 
 function getConeCalcValues(milestoneId, phase) {
   const sig = getConeRuntimeSignals();
   if (phase === "success") {
-    if (sig.hasPdf) return ["PDF", "STAMP", "READY"];
     if (sig.hasRelabel) return ["KMZ", "ORDER", "DONE"];
     return ["DONE", "CLEAR", "READY"];
   }
@@ -2579,7 +2473,6 @@ function getConeCalcValues(milestoneId, phase) {
   if (milestoneId === "load") return ["CSV", "KMZ", "HDR", "SCAN"];
   if (milestoneId === "normalize") return ["LAT", "LON", "GPS?", "MATCH"];
   if (milestoneId === "filter") return ["IN?", "KMZ", "ROUTE", "KEEP", "CUT"];
-  if (sig.hasPdf) return ["PDF", "PAGE", "PACK", "SHIP"];
   if (sig.hasRelabel) return ["KMZ", "ORDER", "WEST", "DONE"];
   return ["XLSX", "KMZ", "ZIP", "DONE"];
 }
@@ -2770,18 +2663,14 @@ async function finalizeRun(status) {
       data.inputs && (data.inputs.coordinateReviewFile || data.inputs.browserReviewDecisionCount)
     );
     if (status === "success") {
-      const successTitle = runKind === "report"
-        ? "Report complete"
-        : (runKind === "relabel"
-          ? "Labels regenerated"
-          : (usedReviewWorkbook ? "Review decisions applied" : "Refinement complete"));
-      const successSnapshot = runKind === "report"
-        ? "PDF report completed successfully."
-        : (runKind === "relabel"
-          ? "Refined output and KMZ labels were updated."
-          : (usedReviewWorkbook
-            ? "Refinement reran with approved coordinates."
-            : "Refinement completed successfully."));
+      const successTitle = runKind === "relabel"
+        ? "Labels regenerated"
+        : (usedReviewWorkbook ? "Review decisions applied" : "Refinement complete");
+      const successSnapshot = runKind === "relabel"
+        ? "Refined output and KMZ labels were updated."
+        : (usedReviewWorkbook
+          ? "Refinement reran with approved coordinates."
+          : "Refinement completed successfully.");
       setStatus(
         "success",
         successTitle,
@@ -2790,23 +2679,17 @@ async function finalizeRun(status) {
       el.snapshotTag.textContent = "Complete";
       el.snapshotStatus.textContent = successSnapshot;
     } else {
-      const errorTitle = runKind === "report"
-        ? "Report failed"
-        : (runKind === "relabel"
-          ? "Label regeneration failed"
-          : (usedReviewWorkbook ? "Review apply failed" : "Refinement failed"));
-      const errorSnapshot = runKind === "report"
-        ? "PDF report encountered errors."
-        : (runKind === "relabel"
-          ? "Relabeling encountered errors."
-          : (usedReviewWorkbook
-            ? "Approved coordinate rerun encountered errors."
-            : "Refinement encountered errors."));
-      const errorToast = runKind === "report"
-        ? "PDF report failed."
-        : (runKind === "relabel"
-          ? "Regenerating labels failed."
-          : (usedReviewWorkbook ? "Applying review decisions failed." : "Refinement failed."));
+      const errorTitle = runKind === "relabel"
+        ? "Label regeneration failed"
+        : (usedReviewWorkbook ? "Review apply failed" : "Refinement failed");
+      const errorSnapshot = runKind === "relabel"
+        ? "Relabeling encountered errors."
+        : (usedReviewWorkbook
+          ? "Approved coordinate rerun encountered errors."
+          : "Refinement encountered errors.");
+      const errorToast = runKind === "relabel"
+        ? "Regenerating labels failed."
+        : (usedReviewWorkbook ? "Applying review decisions failed." : "Refinement failed.");
       setStatus(
         "error",
         errorTitle,
@@ -2845,7 +2728,6 @@ async function finalizeRun(status) {
       el.snapshotLastRun.textContent = `${describeCompletedAction(runKind, usedReviewWorkbook)} at ${new Date(finishedAt).toLocaleString()}`;
     }
     setProgressRunning(false);
-    setReportProgressRunning(false);
     updateConeTracker(status === "success" ? "success" : "error");
     unlockUiAfterRun();
     updateResultsSummary();
@@ -2968,16 +2850,13 @@ async function restoreUiSession() {
     }
     if (data.status === "running") {
       const runKind = (data.inputs && data.inputs.runKind) || "refine";
-      const runningTitle = runKind === "report"
-        ? "Report running"
-        : (runKind === "relabel"
-          ? "Regenerating labels"
-          : (runKind === "review" ? "Applying review decisions" : "Refinement running"));
+      const runningTitle = runKind === "relabel"
+        ? "Regenerating labels"
+        : (runKind === "review" ? "Applying review decisions" : "Refinement running");
       setStatus("running", runningTitle, data.message || "Run in progress.");
       el.snapshotTag.textContent = "Running";
       el.snapshotStatus.textContent = data.message || "Run in progress.";
       setProgressRunning(true);
-      setReportProgressRunning(runKind === "report");
       state.logSeq = 0;
       await pollLogs();
       if (!state.pollTimer) {
@@ -2991,43 +2870,34 @@ async function restoreUiSession() {
       if (data.status === "success") {
         setStatus(
           "success",
-          runKind === "report"
-            ? "Report complete"
-            : (runKind === "relabel"
-              ? "Labels regenerated"
-              : (usedReviewWorkbook ? "Review decisions applied" : "Refinement complete")),
+          runKind === "relabel"
+            ? "Labels regenerated"
+            : (usedReviewWorkbook ? "Review decisions applied" : "Refinement complete"),
           data.message || "Outputs ready."
         );
         el.snapshotTag.textContent = "Complete";
-        el.snapshotStatus.textContent = runKind === "report"
-          ? "PDF report completed successfully."
-          : (runKind === "relabel"
-            ? "Refined output and KMZ labels were updated."
-            : (usedReviewWorkbook
-              ? "Refinement reran with approved coordinates."
-              : "Refinement completed successfully."));
+        el.snapshotStatus.textContent = runKind === "relabel"
+          ? "Refined output and KMZ labels were updated."
+          : (usedReviewWorkbook
+            ? "Refinement reran with approved coordinates."
+            : "Refinement completed successfully.");
       } else if (data.status) {
         setStatus(
           "error",
-          runKind === "report"
-            ? "Report failed"
-            : (runKind === "relabel"
-              ? "Label regeneration failed"
-              : (usedReviewWorkbook ? "Review apply failed" : "Refinement failed")),
+          runKind === "relabel"
+            ? "Label regeneration failed"
+            : (usedReviewWorkbook ? "Review apply failed" : "Refinement failed"),
           data.message || "Review the run log."
         );
         el.snapshotTag.textContent = "Failed";
-        el.snapshotStatus.textContent = runKind === "report"
-          ? "PDF report encountered errors."
-          : (runKind === "relabel"
-            ? "Relabeling encountered errors."
-            : (usedReviewWorkbook
-              ? "Approved coordinate rerun encountered errors."
-              : "Refinement encountered errors."));
+        el.snapshotStatus.textContent = runKind === "relabel"
+          ? "Relabeling encountered errors."
+          : (usedReviewWorkbook
+            ? "Approved coordinate rerun encountered errors."
+            : "Refinement encountered errors.");
       }
       syncConeTrackerToUiContext(data.status || "");
       setProgressRunning(false);
-      setReportProgressRunning(false);
       unlockUiAfterRun();
     }
     setAdvancedToolsOpen(!!saved.advancedToolsOpen);
@@ -3110,7 +2980,6 @@ function bindInputs() {
     schedulePreviewMap();
   });
   el.runRefine.addEventListener("click", startRun);
-  el.generateReport.addEventListener("click", startReport);
   el.labelOrder.addEventListener("change", () => {
     setLabelOrderSelection(el.labelOrder.value, { scope: "input" });
     saveUiSession();
@@ -3120,9 +2989,6 @@ function bindInputs() {
       setLabelOrderSelection(el.resultsLabelOrder.value, { scope: "results" });
       saveUiSession();
     });
-  }
-  if (el.resultsGenerateReport) {
-    el.resultsGenerateReport.addEventListener("click", startReport);
   }
   if (el.resultsRelabel) {
     el.resultsRelabel.addEventListener("click", startRelabel);
@@ -3238,7 +3104,6 @@ function bindInputs() {
     setUiBusy(false);
     state.dataFile = null;
     state.kmzFile = null;
-    state.pdfDataFile = null;
     state.reviewFile = null;
     state.runInputs = null;
     state.lastRunSummary = null;
@@ -3260,7 +3125,6 @@ function bindInputs() {
     state.detailsPanelOpen = false;
     el.dataInput.value = "";
     el.kmzInput.value = "";
-    el.pdfInput.value = "";
     el.reviewInput.value = "";
     el.latColumn.value = "";
     el.lonColumn.value = "";
@@ -3272,8 +3136,6 @@ function bindInputs() {
     el.dataHint.textContent = "Drop file or click to browse";
     el.kmzLabel.textContent = "Boundary KMZ (.kmz)";
     el.kmzHint.textContent = "One polygon only";
-    el.pdfLabel.textContent = "Alternate PDF source (.csv, .xlsx)";
-    el.pdfHint.textContent = "Optional";
     el.reviewLabel.textContent = "Reviewed coordinate workbook";
     el.reviewHint.textContent = "Upload a reviewed workbook";
     updateColumnOptions([]);
@@ -3293,7 +3155,6 @@ function bindInputs() {
     el.mapPlaceholder.textContent = "The map appears here once files are loaded.";
     setMapPreview(null, null, { clearStoredPreview: true });
     renderReviewQueue();
-    setReportProgressRunning(false);
     setReviewWorkbenchTab("map");
     setUiStage("inputs", { persist: false });
     setAdvancedToolsOpen(false);
@@ -3423,18 +3284,6 @@ function init() {
     updateRunButton();
     schedulePreviewMap();
   });
-  setupDropZone(el.pdfDrop, el.pdfInput, (file) => {
-    if (!validateDataFile(file)) {
-      showToast("PDF data must be a CSV or Excel file.");
-      return;
-    }
-    state.pdfDataFile = file;
-    setAdvancedToolsOpen(true);
-    el.pdfLabel.textContent = file.name;
-    el.pdfHint.textContent = "PDF will use this dataset.";
-    updateSummary();
-    updateRunButton();
-  });
   setupDropZone(el.reviewDrop, el.reviewInput, (file) => {
     if (!validateDataFile(file)) {
       showToast("Coordinate review data must be a CSV or Excel file.");
@@ -3452,7 +3301,6 @@ function init() {
   updateSummary();
   renderReviewQueue();
   updateRunButton();
-  setReportProgressRunning(false);
   updateReviewButton();
   setReviewWorkbenchTab("map");
   setLabelOrderSelection("auto");

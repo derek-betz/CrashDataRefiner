@@ -40,19 +40,3 @@ def kmz_output_path(output_path: Path) -> Path:
     if base_name.lower().endswith("_refined"):
         base_name = base_name[:-8]
     return output_path.with_name(f"{base_name}_Crash Data.kmz")
-
-
-def pdf_output_path(output_path: Path) -> Path:
-    """Return the PDF full-report output path derived from *output_path*."""
-    base_name = output_path.stem
-    if base_name.lower().endswith("_refined"):
-        base_name = base_name[:-8]
-    return output_path.with_name(f"{base_name}_Crash Data Full Report.pdf")
-
-
-def summary_output_path(output_path: Path) -> Path:
-    """Return the PDF summary-report output path derived from *output_path*."""
-    base_name = output_path.stem
-    if base_name.lower().endswith("_refined"):
-        base_name = base_name[:-8]
-    return output_path.with_name(f"{base_name}_Crash Data Summary Report.pdf")

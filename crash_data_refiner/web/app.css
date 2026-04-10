@@ -267,10 +267,6 @@ select.field.input {
   overflow: hidden;
 }
 
-.report-progress {
-  margin-top: 10px;
-}
-
 .progress-bar {
   width: 30%;
   height: 100%;
@@ -2655,8 +2651,7 @@ body {
   border: 1px solid rgba(59, 130, 246, 0.35);
 }
 
-.progress,
-.report-progress {
+.progress {
   background: rgba(255, 255, 255, 0.08);
 }
 

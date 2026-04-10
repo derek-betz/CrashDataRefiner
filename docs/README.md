@@ -11,7 +11,7 @@ crash_data_refiner/
 |-- normalize.py      # Public header-normalization and column-inference helpers
 |-- refiner.py        # Core CrashDataRefiner pipeline
 |-- services.py       # Stable facade over shared orchestration helpers
-|-- pipeline.py       # Refinement / relabel / PDF orchestration
+|-- pipeline.py       # Refinement / relabel orchestration
 |-- labeling.py       # KMZ label-direction detection and row ordering
 |-- output_paths.py   # Canonical output-path helpers
 |-- run_contract.py   # Shared run-summary contract for web and API consumers
@@ -24,7 +24,6 @@ crash_data_refiner/
 |-- geo.py            # KMZ/polygon geospatial utilities
 |-- kmz_report.py     # KMZ crash output generation
 |-- map_report.py     # HTML map report generation
-|-- pdf_report.py     # PDF full-report generation
 `-- spreadsheets.py   # CSV/Excel read-write helpers
 ```
 
@@ -49,7 +48,6 @@ crash_data_refiner/
   data template, including the click-preview narrative.
 - HTML map report generates an interactive map showing the boundary polygon and
   included crash points with counts.
-- PDF full report generates a tabular PDF report of refined crash rows.
 - Duplicate detection drops repeated records by specified identifying columns.
 - Gap filling injects default values for missing columns before export.
 
@@ -94,9 +92,7 @@ Recommended happy-path test:
    workbook, coordinate-review workbook, and KMZ output all appear.
 2. Exclude one likely crash in the browser review wizard and apply the reviewed
    decisions.
-3. Generate the PDF full report and confirm the progress log advances while the
-   report is rendering.
-4. Regenerate KMZ labels from the Results stage and confirm the numbering
+3. Regenerate KMZ labels from the Results stage and confirm the numbering
    direction updates without rerunning manual review.
 
 Repeatable browser smoke test:
@@ -188,7 +184,7 @@ Suggested audit checkpoints:
 1. Initial load and favicon/static asset requests are clean.
 2. Column inference, preview map, and refine are available once inputs load.
 3. Review-stage decisions, map placement, and apply-review flows stay in sync.
-4. Results-stage relabel, open-map, report generation, and session restore work
+4. Results-stage relabel, open-map, and session restore work
    on both desktop and mobile widths.
 
 Reference-dataset QC:
@@ -210,15 +206,13 @@ For each dataset it runs:
 - refinement with automatic label ordering
 - one row-level exclusion rerun when review items exist
 - relabeling to the opposite direction
-- PDF generation
-
 The `2101166` reference boundary is the official source of truth, and the test
 fixture in `tests/refiner_inputs/` is kept aligned to that file.
 
 Notes:
 
 - Outputs are written to `outputs/web_runs/<run_id>/`.
-- The map preview and PDF aerial tiles need network access.
+- The map preview needs network access.
 - Use `python -m pytest tests/ -W error::DeprecationWarning` before shipping
   changes so package deprecations fail fast.
 

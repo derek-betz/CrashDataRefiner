@@ -61,9 +61,6 @@
             <div class="progress">
               <div class="progress-bar" id="progress-bar"></div>
             </div>
-            <div class="progress report-progress" id="report-progress">
-              <div class="progress-bar"></div>
-            </div>
           </div>
           <div class="cone-tracker is-idle" id="cone-tracker" data-testid="cone-tracker">
             <div class="cone-tracker-header">
@@ -218,19 +215,6 @@
               <details class="card disclosure-card" id="advanced-tools-panel" style="--delay: 0.16s">
                 <summary class="disclosure-summary">Optional tools</summary>
                 <div class="disclosure-body">
-                  <label class="field-label">Alternate PDF source file</label>
-                  <div class="drop-zone compact" id="pdf-drop" data-testid="pdf-drop">
-                    <div class="drop-icon">
-                      <svg viewBox="0 0 64 48" aria-hidden="true">
-                        <path d="M8 10a6 6 0 0 1 6-6h20l6 6h16a6 6 0 0 1 6 6v18a6 6 0 0 1-6 6H8a6 6 0 0 1-6-6V10z" />
-                      </svg>
-                    </div>
-                    <div class="drop-title" id="pdf-label">Alternate PDF source (.csv, .xlsx)</div>
-                    <div class="drop-subtitle" id="pdf-hint">Optional</div>
-                    <div class="drop-cta" aria-hidden="true">Browse files</div>
-                    <input id="pdf-input" type="file" accept=".csv,.xlsx,.xlsm" aria-label="Alternate PDF source upload" data-testid="pdf-input" />
-                  </div>
-
                   <label class="field-label">Reviewed coordinate workbook</label>
                   <div class="drop-zone compact" id="review-drop" data-testid="review-drop">
                     <div class="drop-icon">
@@ -245,7 +229,6 @@
                   </div>
 
                   <div class="advanced-actions">
-                    <button class="btn secondary small" id="generate-report" data-testid="generate-report" disabled>Generate PDF crash report</button>
                     <button class="btn secondary small" id="apply-review" data-testid="apply-review" disabled>Apply workbook decisions</button>
                   </div>
                 </div>
@@ -336,7 +319,6 @@
                   <span class="summary-pill">Run refinement to create outputs.</span>
                 </div>
                 <div class="results-actions">
-                  <button class="btn primary" id="results-generate-report" data-testid="results-generate-report" disabled>Generate PDF crash report</button>
                   <button class="btn secondary" id="results-open-map" data-testid="results-open-map" disabled>Open project map preview</button>
                   <button class="btn secondary" id="results-resume-review" data-testid="results-resume-review" hidden>Resume review</button>
                 </div>

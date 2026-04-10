@@ -19,7 +19,6 @@ from crash_data_refiner.services import (
     refined_output_path,
     invalid_output_path,
     kmz_output_path,
-    pdf_output_path,
     relabel_refined_outputs,
     rejected_review_output_path,
     build_output_headers,
@@ -124,14 +123,6 @@ def test_kmz_output_path_strips_refined(tmp_path: Path) -> None:
     base = tmp_path / "crashes_refined.csv"
     p = kmz_output_path(base)
     assert p.name == "crashes_Crash Data.kmz"
-
-
-def test_pdf_output_path_strips_refined(tmp_path: Path) -> None:
-    base = tmp_path / "crashes_refined.csv"
-    p = pdf_output_path(base)
-    assert p.name == "crashes_Crash Data Full Report.pdf"
-
-
 # ---------------------------------------------------------------------------
 # Spreadsheet sheet selection
 # ---------------------------------------------------------------------------
@@ -340,7 +331,7 @@ def test_run_refinement_pipeline(tmp_path: Path) -> None:
     assert recovered_row["coordinate_source"] == "recovered"
 
 
-def test_relabel_refined_outputs_rewrites_refined_file_and_removes_stale_pdf(tmp_path: Path) -> None:
+def test_relabel_refined_outputs_rewrites_refined_file(tmp_path: Path) -> None:
     refined_path = tmp_path / "crashes_refined.csv"
     write_spreadsheet(
         str(refined_path),
@@ -351,8 +342,6 @@ def test_relabel_refined_outputs_rewrites_refined_file_and_removes_stale_pdf(tmp
         ],
     )
     kmz_path = tmp_path / "crashes_Crash Data.kmz"
-    stale_pdf = tmp_path / "crashes_Crash Data Full Report.pdf"
-    stale_pdf.write_bytes(b"%PDF-1.4\n")
 
     result = relabel_refined_outputs(
         refined_path=refined_path,
@@ -360,14 +349,12 @@ def test_relabel_refined_outputs_rewrites_refined_file_and_removes_stale_pdf(tmp
         lat_column="lat",
         lon_column="lon",
         label_order="south_to_north",
-        remove_output_paths=[stale_pdf],
     )
 
     assert result.requested_label_order == "south_to_north"
     assert result.resolved_label_order == "south_to_north"
     assert result.kmz_path.exists()
-    assert stale_pdf in result.removed_outputs
-    assert not stale_pdf.exists()
+    assert result.removed_outputs == []
 
     refined = read_spreadsheet(str(refined_path))
     assert [row["crash_id"] for row in refined.rows] == ["1", "2", "3"]
