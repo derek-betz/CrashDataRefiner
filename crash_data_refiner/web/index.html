@@ -19,6 +19,7 @@
         <header class="hero app-hero">
           <div class="hero-content">
             <h1>Crash Data Refiner</h1>
+            <p>Upload crash data, add a KMZ boundary, review the preview, and create deliverables.</p>
           </div>
         </header>
 
@@ -64,46 +65,22 @@
           </div>
           <div class="cone-tracker is-idle" id="cone-tracker" data-testid="cone-tracker">
             <div class="cone-tracker-header">
-              <div class="cone-tracker-label">Work Zone Tracker</div>
+              <div class="cone-tracker-label">Cone Guy</div>
               <div class="cone-tracker-state" id="cone-tracker-state" data-testid="cone-tracker-state">Awaiting run</div>
             </div>
-            <div class="cone-tracker-track">
-              <div class="cone-tracker-road"></div>
-              <div class="cone-tracker-progress" id="cone-tracker-progress"></div>
-              <div class="cone-tracker-bot" id="cone-tracker-bot">
-                <div class="cone-tracker-headlights" aria-hidden="true"></div>
-                <div class="cone-tracker-treads" aria-hidden="true"></div>
-                <div class="cone-tracker-calculator" aria-hidden="true">
-                  <div class="cone-tracker-calculator-screen">Σ</div>
-                  <div class="cone-tracker-calculator-keys">
-                    <span></span><span></span><span></span><span></span>
-                  </div>
-                </div>
+            <div class="cone-tracker-stage">
+              <div class="cone-tracker-bot cone-tracker-bot-static" id="cone-tracker-bot">
                 <img alt="Cone Guy sprite" src="cone-bot.png" />
+                <div class="cone-tracker-calculator-screen cone-tracker-sr-only" aria-hidden="true">Σ</div>
               </div>
-              <div class="cone-tracker-math" aria-hidden="true">
-                <span>+</span><span>-</span><span>×</span><span>÷</span><span>=</span>
-              </div>
-              <div class="cone-tracker-nodes">
-                <div class="cone-tracker-node" data-cone-node="load">
-                  <div class="cone-tracker-dot"></div>
-                  <div class="cone-tracker-node-label">Load</div>
-                </div>
-                <div class="cone-tracker-node" data-cone-node="normalize">
-                  <div class="cone-tracker-dot"></div>
-                  <div class="cone-tracker-node-label">Normalize</div>
-                </div>
-                <div class="cone-tracker-node" data-cone-node="filter">
-                  <div class="cone-tracker-dot"></div>
-                  <div class="cone-tracker-node-label">Filter</div>
-                </div>
-                <div class="cone-tracker-node" data-cone-node="output">
-                  <div class="cone-tracker-dot"></div>
-                  <div class="cone-tracker-node-label">Output</div>
-                </div>
+              <div class="cone-tracker-caption">Cone Guy Is Hanging Out While The Workflow Waits For Input.</div>
+            </div>
+            <div class="cone-tracker-status-copy">
+              <div class="cone-tracker-note" id="cone-tracker-note" data-testid="cone-tracker-note">Waiting for run.</div>
+              <div class="cone-tracker-guidance" id="cone-tracker-guidance" data-testid="cone-tracker-guidance">
+                Add your crash spreadsheet and boundary file to get started.
               </div>
             </div>
-            <div class="cone-tracker-note" id="cone-tracker-note" data-testid="cone-tracker-note">Waiting for run.</div>
           </div>
         </section>
 

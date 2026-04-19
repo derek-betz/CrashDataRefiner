@@ -144,6 +144,7 @@ const el = {
   coneTrackerState: document.getElementById("cone-tracker-state"),
   coneTrackerProgress: document.getElementById("cone-tracker-progress"),
   coneTrackerNote: document.getElementById("cone-tracker-note"),
+  coneTrackerGuidance: document.getElementById("cone-tracker-guidance"),
   coneTrackerCalcScreen: document.querySelector(".cone-tracker-calculator-screen"),
   coneTrackerNodes: Array.from(document.querySelectorAll("[data-cone-node]")),
 };
@@ -1907,6 +1908,13 @@ function renderReviewQueue() {
         <div class="wizard-step-index">Crash ${state.currentReviewIndex + 1} of ${visibleSteps.length}</div>
         <div class="wizard-step-meta wizard-chip-row">${metadataChips}</div>
       </div>
+      <div class="wizard-actions compact wizard-actions-primary">
+        <button class="btn primary small" data-action="wizard-accept-suggested" data-row="${escapeHtml(current.rowKey)}" data-testid="review-use-suggested"${canAcceptSuggested ? "" : " disabled"}>Use suggested</button>
+        <button class="btn secondary small" data-action="wizard-pick-map" data-row="${escapeHtml(current.rowKey)}" data-testid="review-place-on-map">${state.reviewMapPickMode ? "Picking on map" : "Place on map"}</button>
+        <button class="btn secondary small" data-action="wizard-confirm-manual" data-row="${escapeHtml(current.rowKey)}" data-testid="review-confirm-pin"${draftPlacement && draftInside ? "" : " disabled"}>Confirm pin</button>
+        <button class="btn danger small" data-action="wizard-exclude" data-row="${escapeHtml(current.rowKey)}" data-testid="review-exclude">Exclude</button>
+        ${currentChoiceAction}
+      </div>
       <div class="review-head">
         <div>
           <div class="review-title">${escapeHtml(current.title)}</div>
@@ -1932,13 +1940,6 @@ function renderReviewQueue() {
         ${extraDetails}
       </div>
       ${nearbyContextHtml}
-      <div class="wizard-actions compact">
-        <button class="btn secondary small" data-action="wizard-accept-suggested" data-row="${escapeHtml(current.rowKey)}" data-testid="review-use-suggested"${canAcceptSuggested ? "" : " disabled"}>Use suggested</button>
-        <button class="btn secondary small" data-action="wizard-pick-map" data-row="${escapeHtml(current.rowKey)}" data-testid="review-place-on-map">${state.reviewMapPickMode ? "Picking on map" : "Place on map"}</button>
-        <button class="btn secondary small" data-action="wizard-confirm-manual" data-row="${escapeHtml(current.rowKey)}" data-testid="review-confirm-pin"${draftPlacement && draftInside ? "" : " disabled"}>Confirm pin</button>
-        <button class="btn danger small" data-action="wizard-exclude" data-row="${escapeHtml(current.rowKey)}" data-testid="review-exclude">Exclude</button>
-        ${currentChoiceAction}
-      </div>
       <div class="wizard-nav">
         <button class="btn secondary small" data-action="wizard-prev" data-testid="review-prev"${state.currentReviewIndex > 0 ? "" : " disabled"}>Previous</button>
         <button class="btn secondary small" data-action="wizard-next" data-testid="review-next"${state.currentReviewIndex < visibleSteps.length - 1 ? "" : " disabled"}>Next</button>
@@ -2548,6 +2549,13 @@ function updateConeTracker(phase, { instant = false, restored = false } = {}) {
   }
   if (el.coneTrackerNote) {
     el.coneTrackerNote.textContent = getConeNote(phase, milestoneId);
+  }
+  if (el.coneTrackerGuidance) {
+    el.coneTrackerGuidance.textContent =
+      phase === "success" ? "Your outputs are ready in the Results step." :
+      phase === "error" ? "Check the log and review items that still need attention." :
+      phase === "running" ? "Cone Guy is keeping an eye on the workflow while the run is in progress." :
+      "Add your crash spreadsheet and boundary file to get started.";
   }
 
   const prevMilestone = state.coneGuy.milestone;
