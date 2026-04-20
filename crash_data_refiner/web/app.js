@@ -16,6 +16,10 @@ const state = {
   reviewMap: null,
   reviewMapLayers: null,
   reviewMapFocusKey: null,
+  reviewMapPreserveView: false,
+  reviewMapPendingView: null,
+  reviewMapFeedbackTimer: null,
+  reviewMapFeedbackFadeTimer: null,
   reviewWorkbenchTab: "map",
   reviewExcludeConfirmRow: null,
   uiStage: "inputs",
@@ -41,8 +45,7 @@ const state = {
     calcCycleTimer: null,
     calcSignature: "",
   },
-  reviewAdvanceFeedback: null,
-  reviewAdvanceFeedbackTimer: null,
+  toastTimer: null,
 };
 
 const el = {
@@ -108,6 +111,8 @@ const el = {
   mapMode: document.getElementById("map-mode"),
   centerSuggestedPoint: document.getElementById("center-suggested-point"),
   wizardMap: document.getElementById("wizard-map"),
+  reviewMapFeedback: document.getElementById("review-map-feedback"),
+  reviewMapFeedbackBubble: document.getElementById("review-map-feedback-bubble"),
   wizardMapToolbar: document.getElementById("wizard-map-toolbar"),
   wizardMapContext: document.getElementById("wizard-map-context"),
   wizardMapSelection: document.getElementById("wizard-map-selection"),
@@ -118,6 +123,7 @@ const el = {
   reviewList: document.getElementById("review-list"),
   reviewSummary: document.getElementById("review-summary"),
   reviewQueueSubtitle: document.getElementById("review-queue-subtitle"),
+  reviewQueueExplainer: document.getElementById("review-queue-explainer"),
   reviewWorkbench: document.getElementById("review-workbench"),
   reviewWorkbenchTabs: document.getElementById("review-workbench-tabs"),
   reviewTabDetails: document.getElementById("review-tab-details"),
@@ -223,24 +229,78 @@ function handleRunConnectionFailure(
 }
 
 function showToast(message) {
+  if (state.toastTimer) {
+    window.clearTimeout(state.toastTimer);
+    state.toastTimer = null;
+  }
   el.toast.textContent = message;
   el.toast.classList.add("show");
-  window.setTimeout(() => el.toast.classList.remove("show"), 3200);
+  state.toastTimer = window.setTimeout(() => {
+    el.toast.classList.remove("show");
+    state.toastTimer = null;
+  }, 2200);
 }
 
-function setReviewAdvanceFeedback(kind) {
-  state.reviewAdvanceFeedback = {
-    kind,
-    createdAt: Date.now(),
-  };
-  if (state.reviewAdvanceFeedbackTimer) {
-    window.clearTimeout(state.reviewAdvanceFeedbackTimer);
+function hideReviewMapFeedback() {
+  if (state.reviewMapFeedbackTimer) {
+    window.clearTimeout(state.reviewMapFeedbackTimer);
+    state.reviewMapFeedbackTimer = null;
   }
-  state.reviewAdvanceFeedbackTimer = window.setTimeout(() => {
-    state.reviewAdvanceFeedback = null;
-    state.reviewAdvanceFeedbackTimer = null;
-    renderReviewQueue();
-  }, 2200);
+  if (state.reviewMapFeedbackFadeTimer) {
+    window.clearTimeout(state.reviewMapFeedbackFadeTimer);
+    state.reviewMapFeedbackFadeTimer = null;
+  }
+  if (el.reviewMapFeedback) {
+    el.reviewMapFeedback.classList.remove("is-visible", "is-fading");
+    el.reviewMapFeedback.hidden = true;
+  }
+}
+
+function captureReviewMapView() {
+  if (!state.reviewMap || !state.reviewMap._loaded) {
+    return null;
+  }
+  const center = state.reviewMap.getCenter();
+  return {
+    latitude: Number(center.lat),
+    longitude: Number(center.lng),
+    zoom: state.reviewMap.getZoom(),
+  };
+}
+
+function hasActiveSessionWork() {
+  return !!(
+    state.dataFile
+    || state.kmzFile
+    || state.reviewFile
+    || state.runId
+    || state.lastOutputs.length
+    || state.reviewQueue.length
+    || state.reviewSecondaryQueue.length
+    || Object.keys(state.reviewDecisions).length
+    || Object.keys(state.reviewDraftPlacements).length
+  );
+}
+
+function showReviewMapFeedback(message) {
+  if (!el.reviewMapFeedback || !el.reviewMapFeedbackBubble) {
+    showToast(message);
+    return;
+  }
+  hideReviewMapFeedback();
+  el.reviewMapFeedbackBubble.textContent = message;
+  el.reviewMapFeedback.hidden = false;
+  window.requestAnimationFrame(() => {
+    if (!el.reviewMapFeedback) return;
+    el.reviewMapFeedback.classList.add("is-visible");
+    state.reviewMapFeedbackTimer = window.setTimeout(() => {
+      if (!el.reviewMapFeedback) return;
+      el.reviewMapFeedback.classList.add("is-fading");
+      state.reviewMapFeedbackFadeTimer = window.setTimeout(() => {
+        hideReviewMapFeedback();
+      }, 500);
+    }, 2000);
+  });
 }
 
 function setStatus(stateName, title, detail) {
@@ -372,6 +432,9 @@ function readUiSession() {
 function setUiStage(stage, { persist = true } = {}) {
   const nextStage = canEnterStage(stage) ? stage : (state.runId ? "results" : "inputs");
   state.uiStage = nextStage;
+  if (el.statusBar) {
+    el.statusBar.dataset.uiStage = state.uiStage;
+  }
   const stages = ["inputs", "review", "results"];
   stages.forEach((name) => {
     const view = name === "inputs"
@@ -659,7 +722,7 @@ function updateWorkflowGuidance() {
   const isFreshInputsScreen = state.uiStage === "inputs" && !state.dataFile && !state.kmzFile;
   let warning = "";
   if (reviewPendingCount() && state.uiStage === "results") {
-    warning = `${reviewPendingCount()} review candidate(s) are still available if you want to inspect crash placements.`;
+    warning = `${reviewPendingCount()} crash candidate(s) were determined to be unlikely to fall within the project limits. They remain available only if you want an extra review pass.`;
   } else if (!isFreshInputsScreen && !state.showSecondaryReview && (state.reviewSecondaryQueue || []).length) {
     warning = `${state.reviewSecondaryQueue.length} lower-likelihood crash candidate(s) are hidden until requested.`;
   } else if (state.uiStage === "inputs" && state.dataFile && state.kmzFile && !(el.latColumn.value.trim() && el.lonColumn.value.trim())) {
@@ -1269,6 +1332,17 @@ function getCurrentReviewStep() {
   return clampReviewIndex();
 }
 
+function nextReviewStepShouldAutoCenterToSuggestion() {
+  const nextStep = getCurrentReviewStep();
+  return !!(
+    nextStep
+    && nextStep.hasSuggestion
+    && nextStep.suggestedInsideBoundary !== false
+    && nextStep.suggestedLatitude != null
+    && nextStep.suggestedLongitude != null
+  );
+}
+
 function getAllReviewSteps() {
   return [...state.reviewQueue, ...state.reviewSecondaryQueue];
 }
@@ -1450,6 +1524,7 @@ function ensureReviewMap() {
 }
 
 function showProjectPreviewMap() {
+  hideReviewMapFeedback();
   el.mapMode.textContent = "Project Map";
   el.mapSubtitle.textContent = "Preview the project boundary and current outputs.";
   if (el.centerSuggestedPoint) {
@@ -1524,7 +1599,7 @@ function renderReviewMap() {
       ? window.L.latLngBounds(polygon[0])
       : null;
 
-    if (!state.reviewMap._loaded) {
+    if (!state.reviewMap._loaded && !state.reviewMapPreserveView) {
       if (activePlacement) {
         state.reviewMap.setView([activePlacement.latitude, activePlacement.longitude], 17);
       } else if (hasUsableSuggestedPoint) {
@@ -1585,15 +1660,29 @@ function renderReviewMap() {
       ).addTo(selected);
     }
 
-    if (state.reviewMapFocusKey !== current.rowKey) {
-      if (activePlacement) {
-        state.reviewMap.setView([activePlacement.latitude, activePlacement.longitude], 17);
-      } else if (hasUsableSuggestedPoint) {
-        state.reviewMap.setView([current.suggestedLatitude, current.suggestedLongitude], 17);
-      } else if (boundaryBounds) {
-        state.reviewMap.fitBounds(boundaryBounds, { padding: [20, 20] });
+    if (state.reviewMapPendingView) {
+      state.reviewMap.setView(
+        [state.reviewMapPendingView.latitude, state.reviewMapPendingView.longitude],
+        state.reviewMapPendingView.zoom,
+        { animate: false }
+      );
+      state.reviewMapFocusKey = current.rowKey;
+      state.reviewMapPendingView = null;
+      state.reviewMapPreserveView = false;
+    } else if (state.reviewMapFocusKey !== current.rowKey) {
+      if (!state.reviewMapPreserveView) {
+        if (activePlacement) {
+          state.reviewMap.setView([activePlacement.latitude, activePlacement.longitude], 17);
+        } else if (hasUsableSuggestedPoint) {
+          state.reviewMap.setView([current.suggestedLatitude, current.suggestedLongitude], 17);
+        } else if (boundaryBounds) {
+          state.reviewMap.fitBounds(boundaryBounds, { padding: [20, 20] });
+        }
       }
       state.reviewMapFocusKey = current.rowKey;
+    }
+    if (state.reviewMapPreserveView) {
+      state.reviewMapPreserveView = false;
     }
 
     const decision = state.reviewDecisions[current.rowKey];
@@ -1617,7 +1706,7 @@ function renderReviewMap() {
     } else {
       el.wizardMapSelection.textContent = "No suggested point";
     }
-    el.clearMapSelection.textContent = "Discard Map Pin";
+    el.clearMapSelection.textContent = "Clear Pin";
     el.clearMapSelection.disabled = !draftPlacement;
   };
 
@@ -1748,6 +1837,12 @@ function renderReviewQueue() {
     }
   }
 
+  if (el.reviewQueueExplainer) {
+    el.reviewQueueExplainer.textContent = totalLoaded
+      ? `This dataset included crashes without latitude/longitude. The application found ${visibleSteps.length || totalLoaded} crash${(visibleSteps.length || totalLoaded) === 1 ? "" : "es"} that are likely inside the project limits. Review each crash, decide whether it falls inside the project, and if it does, place it on the map so it appears correctly in the output KMZ.`
+      : "This dataset included crashes without latitude/longitude. Review the likely in-project crashes, decide whether each one falls inside the project limits, and place any in-project crash on the map so it appears correctly in the output KMZ.";
+  }
+
   if (!totalLoaded) {
     state.showSecondaryReview = false;
     state.currentReviewIndex = 0;
@@ -1838,18 +1933,25 @@ function renderReviewQueue() {
     : false;
   const choiceState = getCurrentChoiceState(current);
   const hasUsableSuggestedPoint = current.hasSuggestion && current.suggestedInsideBoundary !== false;
-  const canAcceptSuggested = hasUsableSuggestedPoint;
+  const hasDraftPlacement = !!draftPlacement;
+  const canAcceptSuggested = hasUsableSuggestedPoint && !hasDraftPlacement;
+  const canPlaceOnMap = !hasDraftPlacement;
+  const canExclude = !hasDraftPlacement;
   const navigationSecondaryLabel = secondarySteps.length
     ? (state.showSecondaryReview ? "Hide Lower-Likelihood Crashes" : "Load Lower-Likelihood Crashes")
     : "";
-  const currentChoiceAction = choiceState.showAction
+  const currentChoiceAction = choiceState.showAction && choiceState.kind !== "staged"
     ? `<button class="btn secondary small" data-action="wizard-clear-decision" data-row="${escapeHtml(current.rowKey)}" data-testid="review-clear-decision">${escapeHtml(choiceState.actionLabel)}</button>`
+    : "";
+  const confirmPinAction = hasDraftPlacement
+    ? `<button class="btn primary small is-ready" data-action="wizard-confirm-manual" data-row="${escapeHtml(current.rowKey)}" data-testid="review-confirm-pin"${draftInside ? "" : " disabled"}>Confirm Pin</button>`
+    : "";
+  const clearPinAction = hasDraftPlacement
+    ? `<button class="btn secondary small is-ready" data-action="wizard-clear-pin" data-row="${escapeHtml(current.rowKey)}" data-testid="review-clear-pin">Clear Pin</button>`
     : "";
   const metadataChips = metadata.length
     ? metadata.map((item) => `<span class="meta-chip">${escapeHtml(item)}</span>`).join("")
     : '<span class="meta-chip">No crash metadata</span>';
-  const reviewNote = current.reviewReason || current.note || "No review signal recorded.";
-  const detailSummary = current.detail || "Location details unavailable.";
   const suggestionBadge = hasUsableSuggestedPoint
     ? `Suggested ${escapeHtml(`${formatCoordinate(current.suggestedLatitude)}, ${formatCoordinate(current.suggestedLongitude)}`)}`
     : "No suggestion";
@@ -1863,12 +1965,10 @@ function renderReviewQueue() {
   ].filter(Boolean);
   const nearbyContextHtml = nearbyCrashes.length
     ? `
-      <section class="review-context-panel" data-testid="review-nearby-context">
+      <details class="review-more compact review-context-panel" data-testid="review-nearby-context">
+        <summary>Nearby Refined Crashes</summary>
         <div class="review-context-header">
-          <div>
-            <div class="review-context-kicker">Nearby refined crashes</div>
-            <div class="review-context-title">Use recent in-project crash placements as a reference.</div>
-          </div>
+          <div class="review-context-title">Use recent in-project crash placements as a reference.</div>
           <div class="review-context-count">${nearbyCrashes.length} nearby</div>
         </div>
         <div class="review-context-list">
@@ -1885,61 +1985,65 @@ function renderReviewQueue() {
             </article>
           `).join("")}
         </div>
-      </section>
+      </details>
     `
     : "";
-  const extraDetails = reviewDetails.length || current.note || current.hasNarrative
+  const technicalDetails = reviewDetails.length || current.note
     ? `
       <details class="review-more compact">
         <summary>Details</summary>
         ${reviewDetails.length ? `<ul class="review-relevance-list">${reviewDetails.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul>` : ""}
         ${current.note ? `<div class="review-note">${escapeHtml(current.note)}</div>` : ""}
-        ${current.hasNarrative ? `<div class="wizard-narrative-text">${escapeHtmlWithBreaks(current.narrative)}</div>` : ""}
       </details>
     `
     : "";
-  const feedbackClass = state.reviewAdvanceFeedback
-    ? `review-feedback-${escapeHtml(state.reviewAdvanceFeedback.kind)}`
+  const crashNarrative = current.hasNarrative
+    ? `
+      <details class="review-more compact review-narrative-panel">
+        <summary>Crash Narrative</summary>
+        <div class="wizard-narrative-text">${escapeHtmlWithBreaks(current.narrative)}</div>
+      </details>
+    `
     : "";
-
   el.reviewList.innerHTML = `
-    <section class="wizard-card ${decision ? "selected" : ""} ${feedbackClass}" data-testid="review-current-card">
+    <section class="wizard-card ${decision ? "selected" : ""}" data-testid="review-current-card">
       <div class="wizard-progress compact">
         <div class="wizard-step-index">Crash ${state.currentReviewIndex + 1} of ${visibleSteps.length}</div>
         <div class="wizard-step-meta wizard-chip-row">${metadataChips}</div>
       </div>
       <div class="wizard-actions compact wizard-actions-primary">
         <button class="btn primary small" data-action="wizard-accept-suggested" data-row="${escapeHtml(current.rowKey)}" data-testid="review-use-suggested"${canAcceptSuggested ? "" : " disabled"}>Use suggested</button>
-        <button class="btn secondary small" data-action="wizard-pick-map" data-row="${escapeHtml(current.rowKey)}" data-testid="review-place-on-map">${state.reviewMapPickMode ? "Picking on map" : "Place on map"}</button>
-        <button class="btn secondary small" data-action="wizard-confirm-manual" data-row="${escapeHtml(current.rowKey)}" data-testid="review-confirm-pin"${draftPlacement && draftInside ? "" : " disabled"}>Confirm pin</button>
-        <button class="btn danger small" data-action="wizard-exclude" data-row="${escapeHtml(current.rowKey)}" data-testid="review-exclude">Exclude</button>
+        <button class="btn secondary small" data-action="wizard-pick-map" data-row="${escapeHtml(current.rowKey)}" data-testid="review-place-on-map"${canPlaceOnMap ? "" : " disabled"}>${state.reviewMapPickMode ? "Picking on map" : "Place on map"}</button>
+        ${confirmPinAction}
+        ${clearPinAction}
+        <button class="btn danger small" data-action="wizard-exclude" data-row="${escapeHtml(current.rowKey)}" data-testid="review-exclude"${canExclude ? "" : " disabled"}>Exclude</button>
         ${currentChoiceAction}
       </div>
-      <div class="review-head">
-        <div>
-          <div class="review-title">${escapeHtml(current.title)}</div>
-          <div class="review-detail">${escapeHtml(current.detail || "Location details unavailable.")}</div>
+      <section class="review-decision-panel">
+        <div class="review-panel-kicker">Decision Panel</div>
+        <div class="review-head">
+          <div>
+            <div class="review-title">${escapeHtml(current.title)}</div>
+            <div class="review-detail">${escapeHtml(current.detail || "Location details unavailable.")}</div>
+          </div>
+          <div class="review-badges compact-stack">
+            <span class="review-badge ${reviewBucket}">${escapeHtml(bucketLabel)}</span>
+            <span class="review-badge status ${escapeHtml(choiceState.statusClass)}">${escapeHtml(choiceState.statusText)}</span>
+          </div>
         </div>
-        <div class="review-badges compact-stack">
-          <span class="review-badge ${reviewBucket}">${escapeHtml(bucketLabel)}</span>
-          <span class="review-badge status ${escapeHtml(choiceState.statusClass)}">${escapeHtml(choiceState.statusText)}</span>
+        <div class="review-location-banner" data-testid="review-location-banner">
+          ${locationSignals.map((line, index) => `
+            <div class="${index === 0 ? "review-location-title" : "review-location-line"}">${escapeHtml(line)}</div>
+          `).join("")}
         </div>
-      </div>
-      <div class="wizard-chip-row">
-        <span class="meta-chip">${escapeHtml(suggestionBadge)}</span>
-        ${draftPlacement ? `<span class="meta-chip ${draftInside ? "ready" : "warn"}">Pin ${escapeHtml(`${formatCoordinate(draftPlacement.latitude)}, ${formatCoordinate(draftPlacement.longitude)}`)}</span>` : ""}
-      </div>
-      <div class="review-location-banner" data-testid="review-location-banner">
-        ${locationSignals.map((line, index) => `
-          <div class="${index === 0 ? "review-location-title" : "review-location-line"}">${escapeHtml(line)}</div>
-        `).join("")}
-      </div>
-      <div class="review-relevance compact">
-        <div class="review-relevance-summary">${escapeHtml(reviewNote)}</div>
-        <div class="review-note">${escapeHtml(detailSummary)}</div>
-        ${extraDetails}
-      </div>
+        <div class="wizard-chip-row review-signal-row">
+          <span class="meta-chip">${escapeHtml(suggestionBadge)}</span>
+          ${draftPlacement ? `<span class="meta-chip ${draftInside ? "ready" : "warn"}">Pin ${escapeHtml(`${formatCoordinate(draftPlacement.latitude)}, ${formatCoordinate(draftPlacement.longitude)}`)}</span>` : ""}
+        </div>
+        ${crashNarrative}
+      </section>
       ${nearbyContextHtml}
+      ${technicalDetails}
       <div class="wizard-nav">
         <button class="btn secondary small" data-action="wizard-prev" data-testid="review-prev"${state.currentReviewIndex > 0 ? "" : " disabled"}>Previous</button>
         <button class="btn secondary small" data-action="wizard-next" data-testid="review-next"${state.currentReviewIndex < visibleSteps.length - 1 ? "" : " disabled"}>Next</button>
@@ -2055,7 +2159,7 @@ function confirmSuggestedPlacement(rowKey) {
   clearPendingExclusion();
   delete state.reviewDraftPlacements[rowKey];
   state.reviewMapPickMode = false;
-  state.reviewMapFocusKey = null;
+  state.reviewMapPreserveView = true;
   state.reviewDecisions[rowKey] = {
     rowKey,
     latitude: step.suggestedLatitude,
@@ -2065,8 +2169,8 @@ function confirmSuggestedPlacement(rowKey) {
     note: "Confirmed suggested placement in browser review workbench.",
   };
   moveToNextReviewStep(true);
-  setReviewAdvanceFeedback("placed");
-  showToast("Suggested crash placement saved. Loading the next crash.");
+  state.reviewMapPreserveView = !nextReviewStepShouldAutoCenterToSuggestion();
+  showToast("Suggested crash placement saved.");
   renderReviewQueue();
 }
 
@@ -2103,7 +2207,7 @@ function confirmManualPlacement(rowKey) {
   focusReviewStep(rowKey);
   clearPendingExclusion();
   state.reviewMapPickMode = false;
-  state.reviewMapFocusKey = null;
+  state.reviewMapPreserveView = true;
   state.reviewDecisions[rowKey] = {
     rowKey,
     latitude: draftPlacement.latitude,
@@ -2114,9 +2218,9 @@ function confirmManualPlacement(rowKey) {
   };
   delete state.reviewDraftPlacements[rowKey];
   moveToNextReviewStep(true);
-  setReviewAdvanceFeedback("placed");
-  showToast("Manual crash placement saved. Loading the next crash.");
+  state.reviewMapPreserveView = !nextReviewStepShouldAutoCenterToSuggestion();
   renderReviewQueue();
+  showReviewMapFeedback("Crash placed in the project.");
 }
 
 function rejectReviewCrash(rowKey) {
@@ -2127,16 +2231,16 @@ function rejectReviewCrash(rowKey) {
   clearPendingExclusion();
   delete state.reviewDraftPlacements[rowKey];
   state.reviewMapPickMode = false;
-  state.reviewMapFocusKey = null;
+  state.reviewMapPreserveView = true;
   state.reviewDecisions[rowKey] = {
     rowKey,
     action: "reject",
     note: "Excluded from project in browser review workbench.",
   };
   moveToNextReviewStep(true);
-  setReviewAdvanceFeedback("excluded");
-  showToast("Crash excluded from the project. Loading the next crash.");
+  state.reviewMapPreserveView = !nextReviewStepShouldAutoCenterToSuggestion();
   renderReviewQueue();
+  showReviewMapFeedback("Crash excluded from the project.");
 }
 
 function toggleCrashExclusion(rowKey) {
@@ -2158,9 +2262,10 @@ function clearCurrentMapPlacement() {
     return;
   }
   clearPendingExclusion();
+  state.reviewMapPendingView = captureReviewMapView();
   delete state.reviewDraftPlacements[current.rowKey];
   state.reviewMapPickMode = false;
-  state.reviewMapFocusKey = null;
+  state.reviewMapPreserveView = true;
   renderReviewQueue();
 }
 
@@ -3072,6 +3177,10 @@ function bindInputs() {
       confirmManualPlacement(rowKey);
       return;
     }
+    if (target.dataset.action === "wizard-clear-pin") {
+      clearCurrentMapPlacement();
+      return;
+    }
     if (target.dataset.action === "wizard-exclude") {
       toggleCrashExclusion(rowKey);
       return;
@@ -3100,6 +3209,14 @@ function bindInputs() {
     });
   }
   el.clearSession.addEventListener("click", () => {
+    if (hasActiveSessionWork()) {
+      const confirmed = window.confirm(
+        "Start over and clear the current files, review work, and results?"
+      );
+      if (!confirmed) {
+        return;
+      }
+    }
     clearPollingTimer();
     if (state.previewTimer) {
       window.clearTimeout(state.previewTimer);

@@ -30,6 +30,31 @@ _NARRATIVE_FIELDS: Sequence[str] = (
     "notes",
 )
 
+_FATALITY_FIELDS: Sequence[str] = (
+    "fatalities",
+    "fatality",
+    "injury_fatal_number",
+    "fatal_count",
+)
+
+_INJURY_FIELDS: Sequence[str] = (
+    "injury_nonfatal_number",
+    "serious_injuries",
+    "injuries",
+    "injury_count",
+    "bodily_injuries",
+    "bodily_injury_count",
+    "possible_injuries",
+    "minor_injuries",
+    "non_incapacitating_injuries",
+    "incapacitating_injuries",
+    "evident_injuries",
+)
+
+_VEHICLE_ICON_HREF = "http://maps.google.com/mapfiles/kml/shapes/cabs.png"
+_SERIOUS_ICON_COLOR = "ff2a2aff"
+_PDO_ICON_COLOR = "ff2dbb63"
+
 
 def write_kmz_report(
     path: str,
@@ -43,7 +68,7 @@ def write_kmz_report(
     lat_key = normalize_header(latitude_column)
     lon_key = normalize_header(longitude_column)
 
-    placemarks: list[Tuple[float, float, str]] = []
+    placemarks: list[Tuple[float, float, str, str]] = []
     for row in rows:
         normalized_row = {normalize_header(key): value for key, value in row.items()}
         lat = parse_coordinate(normalized_row.get(lat_key))
@@ -51,7 +76,8 @@ def write_kmz_report(
         if lat is None or lon is None:
             continue
         description = _build_description(normalized_row, lat_key=lat_key, lon_key=lon_key)
-        placemarks.append((lat, lon, description))
+        severity_style = _placemark_style_id(normalized_row)
+        placemarks.append((lat, lon, description, severity_style))
 
     placemarks = _order_placemarks(placemarks, label_order)
     kml = _render_kml(Path(path).name, folder_name, placemarks)
@@ -61,9 +87,9 @@ def write_kmz_report(
 
 
 def _order_placemarks(
-    placemarks: Sequence[Tuple[float, float, str]],
+    placemarks: Sequence[Tuple[float, float, str, str]],
     label_order: str,
-) -> list[Tuple[float, float, str]]:
+) -> list[Tuple[float, float, str, str]]:
     normalized = (label_order or "").strip().lower()
     if normalized == "west_to_east":
         return sorted(placemarks, key=lambda item: (item[1], item[0]))
@@ -72,10 +98,42 @@ def _order_placemarks(
     return list(placemarks)
 
 
+def _to_number(value: Any) -> float:
+    if value is None:
+        return 0.0
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _has_positive_value(row: Mapping[str, Any], keys: Sequence[str]) -> bool:
+    for key in keys:
+        if key in row and _to_number(row.get(key)) > 0:
+            return True
+    return False
+
+
+def _placemark_style_id(row: Mapping[str, Any]) -> str:
+    has_fatality = _has_positive_value(row, _FATALITY_FIELDS)
+    has_injury = _has_positive_value(row, _INJURY_FIELDS)
+    return "#seriousCrash" if has_fatality or has_injury else "#pdoCrash"
+
+
+def _severity_label(row: Mapping[str, Any]) -> str:
+    has_fatality = _has_positive_value(row, _FATALITY_FIELDS)
+    has_injury = _has_positive_value(row, _INJURY_FIELDS)
+    if has_fatality:
+        return "Severity: Fatal Crash"
+    if has_injury:
+        return "Severity: Bodily Injury Crash"
+    return "Severity: Property Damage Only (PDO)"
+
+
 def _build_description(row: Mapping[str, Any], *, lat_key: str, lon_key: str) -> str:
     # The KML description drives the Google Earth click preview bubble.
     used_keys = {lat_key, lon_key, "kmz_label"}
-    summary_values: list[str] = []
+    summary_values: list[str] = [_severity_label(row)]
 
     for candidates in _SUMMARY_FIELDS:
         key, value = _first_nonempty(row, candidates)
@@ -98,7 +156,7 @@ def _build_description(row: Mapping[str, Any], *, lat_key: str, lon_key: str) ->
         if key not in used_keys and _stringify(value)
     ]
 
-    for index in range(4):
+    for index in range(1, 5):
         if not summary_values[index] and remaining:
             summary_values[index] = remaining.pop(0)
 
@@ -154,14 +212,13 @@ def _wrap_cdata(text: str) -> str:
 def _render_kml(
     document_name: str,
     folder_name: str,
-    placemarks: Sequence[Tuple[float, float, str]],
+    placemarks: Sequence[Tuple[float, float, str, str]],
 ) -> str:
     doc_name = escape(document_name)
     folder_label = escape(folder_name)
 
     placemark_blocks = []
-    for index, (lat, lon, description) in enumerate(placemarks, start=1):
-        style_url = "#0_00" if index % 2 else "#0_02"
+    for index, (lat, lon, description, style_url) in enumerate(placemarks, start=1):
         placemark_blocks.append(
             f"""    <Placemark>
       <name>{index}</name>
@@ -190,30 +247,32 @@ def _render_kml(
 <kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2" xmlns:kml="http://www.opengis.net/kml/2.2" xmlns:atom="http://www.w3.org/2005/Atom">
 <Document>
   <name>{doc_name}</name>
-  <StyleMap id="0_00">
+  <StyleMap id="seriousCrash">
     <Pair>
       <key>normal</key>
-      <styleUrl>#Normal0_030</styleUrl>
+      <styleUrl>#seriousCrashNormal</styleUrl>
     </Pair>
     <Pair>
       <key>highlight</key>
-      <styleUrl>#Highlight0_01</styleUrl>
+      <styleUrl>#seriousCrashHighlight</styleUrl>
     </Pair>
   </StyleMap>
-  <StyleMap id="0_02">
+  <StyleMap id="pdoCrash">
     <Pair>
       <key>normal</key>
-      <styleUrl>#Normal0_04</styleUrl>
+      <styleUrl>#pdoCrashNormal</styleUrl>
     </Pair>
     <Pair>
       <key>highlight</key>
-      <styleUrl>#Highlight0_02</styleUrl>
+      <styleUrl>#pdoCrashHighlight</styleUrl>
     </Pair>
   </StyleMap>
-  <Style id="Highlight0_01">
+  <Style id="seriousCrashHighlight">
     <IconStyle>
+      <color>{_SERIOUS_ICON_COLOR}</color>
+      <scale>1.15</scale>
       <Icon>
-        <href>http://www.earthpoint.us/Dots/GoogleEarth/pal4/icon7.png</href>
+        <href>{_VEHICLE_ICON_HREF}</href>
       </Icon>
     </IconStyle>
     <BalloonStyle>
@@ -223,10 +282,12 @@ def _render_kml(
       <width>3</width>
     </LineStyle>
   </Style>
-  <Style id="Highlight0_02">
+  <Style id="pdoCrashHighlight">
     <IconStyle>
+      <color>{_PDO_ICON_COLOR}</color>
+      <scale>1.15</scale>
       <Icon>
-        <href>http://www.earthpoint.us/Dots/GoogleEarth/pal4/icon7.png</href>
+        <href>{_VEHICLE_ICON_HREF}</href>
       </Icon>
     </IconStyle>
     <BalloonStyle>
@@ -236,10 +297,11 @@ def _render_kml(
       <width>3</width>
     </LineStyle>
   </Style>
-  <Style id="Normal0_030">
+  <Style id="seriousCrashNormal">
     <IconStyle>
+      <color>{_SERIOUS_ICON_COLOR}</color>
       <Icon>
-        <href>http://www.earthpoint.us/Dots/GoogleEarth/pal4/icon15.png</href>
+        <href>{_VEHICLE_ICON_HREF}</href>
       </Icon>
     </IconStyle>
     <BalloonStyle>
@@ -249,10 +311,11 @@ def _render_kml(
       <width>2</width>
     </LineStyle>
   </Style>
-  <Style id="Normal0_04">
+  <Style id="pdoCrashNormal">
     <IconStyle>
+      <color>{_PDO_ICON_COLOR}</color>
       <Icon>
-        <href>http://www.earthpoint.us/Dots/GoogleEarth/pal4/icon15.png</href>
+        <href>{_VEHICLE_ICON_HREF}</href>
       </Icon>
     </IconStyle>
     <BalloonStyle>

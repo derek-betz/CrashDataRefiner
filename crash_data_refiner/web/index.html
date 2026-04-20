@@ -18,8 +18,11 @@
       <main class="main" data-testid="app-shell">
         <header class="hero app-hero">
           <div class="hero-content">
-            <h1>Crash Data Refiner</h1>
-            <p>Upload crash data, add a KMZ boundary, review the preview, and create deliverables.</p>
+            <div class="hero-copy">
+              <h1>Crash Data Refiner</h1>
+              <p>Upload crash data, add a KMZ boundary, review the preview, and create deliverables.</p>
+            </div>
+            <button class="btn secondary small app-reset-button" id="clear-session" data-testid="clear-session">Start Over</button>
           </div>
         </header>
 
@@ -73,7 +76,6 @@
                 <img alt="Cone Guy sprite" src="cone-bot.png" />
                 <div class="cone-tracker-calculator-screen cone-tracker-sr-only" aria-hidden="true">Σ</div>
               </div>
-              <div class="cone-tracker-caption">Cone Guy Is Hanging Out While The Workflow Waits For Input.</div>
             </div>
             <div class="cone-tracker-status-copy">
               <div class="cone-tracker-note" id="cone-tracker-note" data-testid="cone-tracker-note">Waiting for run.</div>
@@ -166,7 +168,6 @@
 
                 <div class="actions compact-actions">
                   <button class="btn primary" id="run-refine" data-testid="run-refine" disabled>Run refinement</button>
-                  <button class="btn secondary" id="clear-session" data-testid="clear-session">Start over</button>
                 </div>
               </section>
 
@@ -231,10 +232,13 @@
 
               <div class="card review-workbench-card" style="--delay: 0.2s">
                 <div class="card-header review-workbench-header">
-                  <div>
-                    <div class="card-title">Current crash</div>
+                  <div class="review-workbench-title-block">
+                    <div class="card-title">Current Crash</div>
                     <div class="card-subtitle" id="review-queue-subtitle">Work left: none</div>
                   </div>
+                  <p class="review-workbench-explainer" id="review-queue-explainer">
+                    This dataset included crashes without latitude/longitude. Review the likely in-project crashes, decide whether each one falls inside the project limits, and place any in-project crash on the map so it appears correctly in the output KMZ.
+                  </p>
                 </div>
                 <div class="review-summary" id="review-summary" data-testid="review-summary">
                   No review items loaded.
@@ -261,6 +265,14 @@
                       <iframe title="Map report preview" id="map-frame" data-testid="review-map-frame"></iframe>
                       <div class="map-placeholder" id="map-placeholder" data-testid="review-map-placeholder">
                         The map appears here once files are loaded.
+                      </div>
+                      <div class="review-map-feedback" id="review-map-feedback" hidden aria-live="polite">
+                        <div class="review-map-feedback-bot">
+                          <img alt="" src="cone-bot.png" />
+                        </div>
+                        <div class="review-map-feedback-bubble" id="review-map-feedback-bubble">
+                          Crash placement saved.
+                        </div>
                       </div>
                     </div>
                     <div class="wizard-map-toolbar" id="wizard-map-toolbar" data-testid="wizard-map-toolbar" hidden>

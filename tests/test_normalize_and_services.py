@@ -361,6 +361,47 @@ def test_relabel_refined_outputs_rewrites_refined_file(tmp_path: Path) -> None:
     assert [row["kmz_label"] for row in refined.rows] == ["1", "2", "3"]
 
 
+def test_write_kmz_report_uses_severity_vehicle_styles(tmp_path: Path) -> None:
+    from crash_data_refiner.kmz_report import write_kmz_report
+    import zipfile
+
+    kmz_path = tmp_path / "severity_test.kmz"
+    count = write_kmz_report(
+        str(kmz_path),
+        rows=[
+            {
+                "crash_id": "1",
+                "lat": "41.0",
+                "lon": "-85.0",
+                "fatalities": "1",
+                "injury_nonfatal_number": "0",
+            },
+            {
+                "crash_id": "2",
+                "lat": "41.1",
+                "lon": "-85.1",
+                "fatalities": "0",
+                "injury_nonfatal_number": "0",
+                "property_damage_type": "PDO",
+            },
+        ],
+        latitude_column="lat",
+        longitude_column="lon",
+    )
+
+    assert count == 2
+    with zipfile.ZipFile(kmz_path, "r") as archive:
+        kml = archive.read("doc.kml").decode("utf-8")
+
+    assert "<StyleMap id=\"seriousCrash\">" in kml
+    assert "<StyleMap id=\"pdoCrash\">" in kml
+    assert "maps.google.com/mapfiles/kml/shapes/cabs.png" in kml
+    assert "<styleUrl>#seriousCrash</styleUrl>" in kml
+    assert "<styleUrl>#pdoCrash</styleUrl>" in kml
+    assert "Severity: Fatal Crash" in kml
+    assert "Severity: Property Damage Only (PDO)" in kml
+
+
 def test_run_refinement_pipeline_applies_coordinate_review_workbook(tmp_path: Path) -> None:
     import csv
 
