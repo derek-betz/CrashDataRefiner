@@ -13,6 +13,7 @@ dependencies = [
     "flask>=2.3.0,<3.0.0",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
+    "waitress>=3.0",
     "openpyxl>=3.1",
     "reportlab>=4.2",
     "python-multipart>=0.0.9",

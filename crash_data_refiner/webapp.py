@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 import tempfile
 from pathlib import Path
@@ -41,10 +42,26 @@ from .web_summary import build_web_run_summary, refresh_web_run_summary_for_rela
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 STATIC_DIR = Path(__file__).resolve().parent / "web"
-OUTPUT_ROOT = BASE_DIR / "outputs" / "web_runs"
-PREVIEW_ROOT = OUTPUT_ROOT / "_preview"
 
-MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+
+def _env_path(name: str, default: Path) -> Path:
+    raw_value = os.getenv(name, "").strip()
+    if not raw_value:
+        return default
+    return Path(raw_value).expanduser()
+
+
+def _env_bytes(name: str, default: int) -> int:
+    raw_value = os.getenv(name, "").strip()
+    if not raw_value:
+        return default
+    return int(raw_value)
+
+
+OUTPUT_ROOT = _env_path("CDR_OUTPUT_ROOT", BASE_DIR / "outputs" / "web_runs")
+PREVIEW_ROOT = _env_path("CDR_PREVIEW_ROOT", OUTPUT_ROOT / "_preview")
+
+MAX_UPLOAD_BYTES = _env_bytes("CDR_MAX_UPLOAD_BYTES", 200 * 1024 * 1024)
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="")
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
@@ -151,6 +168,18 @@ def settings() -> Any:
             "generatePdf": False,
         }
     })
+
+
+@app.route("/api/health")
+def health() -> Any:
+    return jsonify(
+        {
+            "ok": True,
+            "outputRoot": str(OUTPUT_ROOT),
+            "previewRoot": str(PREVIEW_ROOT),
+            "maxUploadBytes": MAX_UPLOAD_BYTES,
+        }
+    )
 
 
 @app.route("/api/preview", methods=["POST"])
@@ -708,13 +737,18 @@ def run_view(run_id: str, filename: str) -> Any:
 
 def main() -> None:
     import argparse
+    from waitress import serve
 
     parser = argparse.ArgumentParser(description="Crash Data Refiner web app")
-    parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=8081)
+    parser.add_argument("--host", default=os.getenv("CDR_HOST", "127.0.0.1"))
+    parser.add_argument("--port", type=int, default=int(os.getenv("CDR_PORT", "8081")))
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--threads", type=int, default=int(os.getenv("CDR_THREADS", "4")))
     args = parser.parse_args()
-    app.run(host=args.host, port=args.port, debug=args.debug)
+    if args.debug:
+        app.run(host=args.host, port=args.port, debug=True)
+        return
+    serve(app, host=args.host, port=args.port, threads=max(1, args.threads))
 
 
 if __name__ == "__main__":

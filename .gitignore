@@ -1,8 +1,10 @@
+.venv/
 __pycache__/
 *.py[cod]
 .DS_Store
 *.egg-info/
 crash_data_refiner.egg-info/
+.local-web-svr03-test/
 outputs/
 output/playwright/*
 !output/playwright/.gitkeep
